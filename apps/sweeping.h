@@ -148,7 +148,7 @@ class NodeData {
 private:
     Term term;
     size_t bit_width;
-    std::vector<BtorBitVector> simulation_data; //TODO: memory usage
+    std::vector<BtorBitVectorPtr> simulation_data;
 public:
     NodeData() : term(nullptr), bit_width(0) {} 
 
@@ -156,14 +156,19 @@ public:
 
     NodeData(const Term & t, const size_t & bw) : term(t), bit_width(bw) {}
 
+    NodeData(const NodeData&) = delete;
+    NodeData& operator=(const NodeData&) = delete;
+
+    NodeData(NodeData&&) noexcept = default;
+    NodeData& operator=(NodeData&&) noexcept = default;
+
     Term get_term() const { return term; }
-    
     size_t get_bit_width() const { return bit_width; }
     
-    std::vector<BtorBitVector>& get_simulation_data() {
+    std::vector<BtorBitVectorPtr>& get_simulation_data() {
         return simulation_data;
     }
-    const std::vector<BtorBitVector>& get_simulation_data() const {
+    const std::vector<BtorBitVectorPtr>& get_simulation_data() const {
         return simulation_data;
     }
 
@@ -171,19 +176,20 @@ public:
         return hash(simulation_data);
     }
 
-    static size_t hash(const std::vector<BtorBitVector>& data) {
+    static size_t hash(const std::vector<BtorBitVectorPtr>& data) {
         if (data.empty()) {
             return 0;
         }
 
         size_t hash_val = 0;
         for(const auto & v : data) {
-            auto clean_val = std::string(btor_bv_to_char(&v));
+            auto clean_val = btor_bv_to_string(*v);
             assert(clean_val.substr(0, 2) != "#b");
             hashCombine(hash_val, clean_val);
         }
         return hash_val;
     }
+    
 };
 
 void create_lut(Term current, std::unordered_map<std::string, std::string>& lut) {
@@ -211,35 +217,35 @@ void create_lut(Term current, std::unordered_map<std::string, std::string>& lut)
 void btor_bv_operation_1child(const smt::Op& op, 
                               const BtorBitVector& btor_child_1, 
                               NodeData &nd) {    
+    
+    auto& sim_data = nd.get_simulation_data();
+    
     if(op.prim_op == PrimOp::Not) {
-        auto current_val = btor_bv_not(&btor_child_1);
-        nd.get_simulation_data().push_back(*current_val);
+        auto current_val = btor_bv_not(btor_child_1);
+        nd.get_simulation_data().push_back(std::move(current_val));
     }
     else if(op.prim_op == PrimOp::BVNot) {
-        auto current_val = btor_bv_not(&btor_child_1);
-        nd.get_simulation_data().push_back(*current_val);
+        auto current_val = btor_bv_not(btor_child_1);
+        nd.get_simulation_data().push_back(std::move(current_val));
     }
     else if(op.prim_op == PrimOp::Extract) {
         auto high = op.idx0;
         auto low = op.idx1;
         assert(high >= low);
-        // cout << "btor_child_1: " << btor_child_1.bits << ", width: " << btor_child_1.width << ", length: " << btor_child_1.len << endl;
-        // cout << "btor_child_1: " << btor_child_1.val << ", width: " << btor_child_1.width << endl;
-        auto current_val = btor_bv_slice(&btor_child_1, high, low);
+        auto current_val = btor_bv_slice(btor_child_1, high, low);
         assert(current_val->width == high - low + 1);
-        nd.get_simulation_data().push_back(*current_val);
+        nd.get_simulation_data().push_back(std::move(current_val));
     }
     else if(op.prim_op == PrimOp::Zero_Extend) {
-        auto current_val = btor_bv_uext(&btor_child_1, op.idx0);
-        nd.get_simulation_data().push_back(*current_val);
+        auto current_val = btor_bv_uext(btor_child_1, op.idx0);
+        nd.get_simulation_data().push_back(std::move(current_val));
     }
     else if(op.prim_op == PrimOp::Sign_Extend) {
-        auto current_val = btor_bv_sext(&btor_child_1, op.idx0);
-        nd.get_simulation_data().push_back(*current_val);
+        auto current_val = btor_bv_sext(btor_child_1, op.idx0);
+        nd.get_simulation_data().push_back(std::move(current_val));
     }
     else if(op.prim_op == PrimOp::BVNeg) {
-        auto current_val = btor_bv_neg(&btor_child_1);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_neg(btor_child_1));
     }
     else {
         cout << "Unsupported operation type 1 child: " << op.to_string() << endl;
@@ -251,134 +257,99 @@ void btor_bv_operation_2children(const smt::Op& op,
                                  const BtorBitVector& btor_child_1, 
                                  const BtorBitVector& btor_child_2, 
                                  NodeData &nd) {
+    auto& sim_data = nd.get_simulation_data();
+    
     if(op.prim_op == PrimOp::BVAdd) {
-        auto current_val = btor_bv_add(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_add(btor_child_1, btor_child_2));
     } 
     else if(op.prim_op == PrimOp::BVAnd) {
-        auto current_val = btor_bv_and(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_add(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::And) {
-        auto current_val = btor_bv_and(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_and(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::Concat) {
-        auto current_val = btor_bv_concat(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_concat(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::Equal) {
-        auto current_val = btor_bv_eq(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_eq(btor_child_1, btor_child_2));
     }
-    else if(op.prim_op == PrimOp::BVXor) {
-        auto current_val = btor_bv_xor(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+    else if(op.prim_op == PrimOp::Xor || op.prim_op == PrimOp::BVXor) {
+        sim_data.push_back(btor_bv_xor(btor_child_1, btor_child_2));
     }
-    else if(op.prim_op == PrimOp::Xor) {
-        auto current_val = btor_bv_xor(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
-    }
-    else if(op.prim_op == PrimOp::Or) {
-        auto current_val = btor_bv_or(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
-    }
-    else if(op.prim_op == PrimOp::BVOr) {
-        auto current_val = btor_bv_or(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+    else if(op.prim_op == PrimOp::Or || op.prim_op == PrimOp::BVOr) {
+        sim_data.push_back(btor_bv_or(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVMul) {
-        auto current_val = btor_bv_mul(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_add(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVComp) {
-        auto current_val = btor_bv_compare(&btor_child_1, &btor_child_2);
+        auto current_val = btor_bv_compare(btor_child_1, btor_child_2);
         auto current_val_bv = btor_bv_int64_to_bv(current_val, 1);
-        nd.get_simulation_data().push_back(*current_val_bv);
+        nd.get_simulation_data().push_back(std::move(current_val_bv));
     }
     else if(op.prim_op == PrimOp::Distinct) {
-        auto current_val = btor_bv_ne(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_ne(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVUdiv) {
-        auto current_val = btor_bv_udiv(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_udiv(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVSub) {
-        auto current_val = btor_bv_sub(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_sub(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVUlt) {
-        auto current_val = btor_bv_ult(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_ult(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVUle) {
-        auto current_val = btor_bv_ulte(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_ulte(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVUgt) {
-        auto current_val = btor_bv_ugt(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_ugt(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVUge) {
-        auto current_val = btor_bv_ugte(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_ugte(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVSlt) {
-        auto current_val = btor_bv_slt(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_slt(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVSle) {
-        auto current_val = btor_bv_slte(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_slte(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVSgt) {
-        auto current_val = btor_bv_sgt(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_sgt(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVSge) {
-        auto current_val = btor_bv_sgte(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_sgte(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVNand) {
-        auto current_val = btor_bv_nand(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_nand(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVNor) {
-        auto current_val = btor_bv_nor(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_nor(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVXnor) {
-        auto current_val = btor_bv_xnor(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_xnor(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVUrem) {
-        auto current_val = btor_bv_urem(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_urem(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVSdiv) {
-        auto current_val = btor_bv_sdiv(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_sdiv(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVSrem) {
-        auto current_val = btor_bv_srem(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_srem(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVLshr) {
-        auto current_val = btor_bv_srl(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_srl(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVAshr) {
-        auto current_val = btor_bv_sra(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_sra(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::BVShl) {
-        auto current_val = btor_bv_sll(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_sll(btor_child_1, btor_child_2));
     }
     else if(op.prim_op == PrimOp::Implies) {
-        auto current_val = btor_bv_implies(&btor_child_1, &btor_child_2);
-        nd.get_simulation_data().push_back(*current_val);
+        sim_data.push_back(btor_bv_implies(btor_child_1, btor_child_2));
     }
     else {
         cout << "Unsupported operation type 2 children: " << op.to_string() << endl;
@@ -392,8 +363,7 @@ void btor_bv_operation_3children(const smt::Op& op,
                                  const BtorBitVector& btor_child_3,
                                  NodeData &nd) {
     if(op.prim_op == PrimOp::Ite) {
-        auto current_val = btor_bv_ite(&btor_child_1, &btor_child_2, &btor_child_3);
-        nd.get_simulation_data().push_back(*current_val);
+        nd.get_simulation_data().push_back(btor_bv_ite(btor_child_1, btor_child_2, btor_child_3));
     }
     else {
         cout << "Unsupported operation type 3 children: " << op.to_string() << endl;
@@ -422,7 +392,7 @@ void process_single_child_simulation(const Term & child,
 
     for(size_t i = 0; i < (size_t)num_iterations; i++) {
         const auto & bv_child = sim_data[i];
-        btor_bv_operation_1child(op_type, bv_child, out);
+        btor_bv_operation_1child(op_type, *bv_child, out);
     }
 
     assert(out.get_simulation_data().size() == (size_t)num_iterations);
@@ -456,11 +426,11 @@ void process_two_children_simulation(const smt::TermVec & children,
         for (size_t i = 0; i < num_iterations; ++i) {
             // Resolve the simulation data for the index child (if substitution happened, we use resolved node)
 
-            auto index_str = std::string(btor_bv_to_char( & (sim_data_index[i])));
+            auto index_str = std::string(btor_bv_to_string(*sim_data_index[i]));
             const auto & val_str = all_luts.at(array_var).at(index_str);
             // cout << "index: " << index_str << ", value: " << val_str << endl;
             auto val = btor_bv_char_to_bv(val_str.data());
-            nd.get_simulation_data().push_back(*val);
+            nd.get_simulation_data().push_back(std::move(val));
         }
 
     }else { // for other bit-vector operations
@@ -493,7 +463,7 @@ void process_two_children_simulation(const smt::TermVec & children,
         for (size_t i = 0; i < num_iterations; ++i) {
             const auto& btor_child_1 = sim_data_1[i];
             const auto& btor_child_2 = sim_data_2[i];
-            btor_bv_operation_2children(op_type, btor_child_1, btor_child_2, nd);
+            btor_bv_operation_2children(op_type, *btor_child_1, *btor_child_2, nd);
         }
     }
 
@@ -542,9 +512,9 @@ void process_three_children_simulation(const smt::TermVec& children,
 
     for (size_t i = 0; i < num_iterations; i++) {
         // Retrieve the bit-vector data for each child at the current iteration
-        auto btor_child_1 = sim_data_1[i];
-        auto btor_child_2 = sim_data_2[i];
-        auto btor_child_3 = sim_data_3[i];
+        auto btor_child_1 = *sim_data_1[i];
+        auto btor_child_2 = *sim_data_2[i];
+        auto btor_child_3 = *sim_data_3[i];
         // Apply the operator
         btor_bv_operation_3children(op_type, btor_child_1, btor_child_2, btor_child_3, nd);
     }
@@ -755,7 +725,7 @@ void load_simulation_input(const std::string & path,
         for (const auto & term : input_terms) {
             if (term->to_string() == term_str) {
                 auto bv_input = btor_bv_const(val_str.c_str(), term->get_sort()->get_width());
-                node_data_map[term].get_simulation_data().push_back(*bv_input);
+                node_data_map[term].get_simulation_data().push_back(std::move(bv_input));
             }
         }
     }
@@ -814,7 +784,7 @@ void simulation(const TermIterable & input_terms,
             auto it = term_lookup.find(term_str);
             if (it != term_lookup.end()) {
                 auto bv_input = btor_bv_const(val_str.c_str(), it->second->get_sort()->get_width());
-                node_data_map[it->second].get_simulation_data().push_back(*bv_input);
+                node_data_map[it->second].get_simulation_data().push_back(std::move(bv_input));
             }
         }
         return;
@@ -864,7 +834,7 @@ void simulation(const TermIterable & input_terms,
             }
 
             auto bv_input = btor_bv_const(value_str.c_str(), term->get_sort()->get_width());
-            node_data_map[term].get_simulation_data().push_back(*bv_input);
+            node_data_map[term].get_simulation_data().push_back(std::move(bv_input));
             if (dumpfile.is_open()) dumpfile << term->to_string() << " = " << value_str << "\n";
         }
         if (dumpfile.is_open()) dumpfile << "\n";
@@ -906,13 +876,13 @@ void simulate_constant_node(const smt::Term& current,
         std::string bitval = (val_str == "true") ? "1" : "0";
         auto current_bv = btor_bv_char_to_bv(bitval.c_str());
         for (int i = 0; i < num_iterations; ++i)
-            node_data_map[current].get_simulation_data().push_back(*current_bv);
+            node_data_map[current].get_simulation_data().push_back(std::move(current_bv));
     } else {
         std::string current_str = current->to_string().substr(2);
         auto current_bv = btor_bv_char_to_bv(current_str.data());
         assert(current_bv->width == current->get_sort()->get_width());
         for (int i = 0; i < num_iterations; ++i)
-            node_data_map[current].get_simulation_data().push_back(*current_bv);
+            node_data_map[current].get_simulation_data().push_back(std::move(current_bv));
     }
     assert(node_data_map[current].get_simulation_data().size() == num_iterations);
 }
@@ -1041,7 +1011,7 @@ TryFindResult try_find_equiv_term(const Term & cnode,
         const auto & existing_sim_data = node_data_map.at(t).get_simulation_data();
         bool match = true;
         for (int i = 0; i < num_iterations; ++i) {
-            if (btor_bv_compare(&existing_sim_data[i], &sim_data_vec[i]) != 0) {
+            if (btor_bv_compare(*existing_sim_data[i], *sim_data_vec[i]) != 0) {
                 match = false;
                 break;
             }
@@ -1122,15 +1092,18 @@ void pre_collect_constants(const std::vector<Term>& traversal_roots,
             if(current->get_sort()->get_sort_kind() == BOOL){
                 std::string val_str = current->to_string(); // "true" / "false"
                 std::string bitval = (val_str == "true") ? "1" : "0";
-                auto current_bv = btor_bv_char_to_bv(bitval.c_str());
-                for (int i = 0; i < num_iterations; ++i)
-                    node_data_map[current].get_simulation_data().push_back(*current_bv);
+                
+                for (int i = 0; i < num_iterations; ++i){
+                    auto current_bv = btor_bv_char_to_bv(bitval.c_str());
+                    node_data_map[current].get_simulation_data().push_back(std::move(current_bv));
+                }
             } else {
                 std::string current_str = current->to_string().substr(2);
-                auto current_bv = btor_bv_char_to_bv(current_str.data());
+                
                 if(node_data_map[current].get_simulation_data().empty()){
                     for (int i = 0; i < num_iterations; ++i) {
-                        node_data_map[current].get_simulation_data().push_back(*current_bv);
+                        auto current_bv = btor_bv_char_to_bv(current_str.data());
+                        node_data_map[current].get_simulation_data().push_back(std::move(current_bv));
                     }
                 }
             }
@@ -1200,14 +1173,13 @@ void fill_simulation_data_for_all_nodes(std::unordered_map<Term, NodeData>& node
                 : term->to_string().substr(2);
             auto bv = btor_bv_char_to_bv(val_str.c_str());
             for (int i = current_size; i < num_iterations; ++i)
-                sim_vec.push_back(*bv);
+                sim_vec.push_back(std::move(bv));
         } else if (term->is_symbolic_const() && term->get_op().is_null()) {
             Term val = solver->get_value(term);
             std::string val_str = (term->get_sort()->get_sort_kind() == BOOL)
                 ? ((val->to_string() == "true") ? "1" : "0")
                 : val->to_string().substr(2);
-            BtorBitVector bv_val = *btor_bv_char_to_bv(val_str.c_str());
-            sim_vec.push_back(bv_val);
+            sim_vec.push_back(btor_bv_char_to_bv(val_str.c_str()));
         } else {
             TermVec children(term->begin(), term->end());
             TermVec substituted;
@@ -1215,7 +1187,7 @@ void fill_simulation_data_for_all_nodes(std::unordered_map<Term, NodeData>& node
             NodeData temp_sim;
             int one_iter = 1;
             compute_simulation(substituted, one_iter, term->get_op(), node_data_map, all_luts, temp_sim);
-            sim_vec.push_back(temp_sim.get_simulation_data().front());
+            sim_vec.push_back(std::move(temp_sim.get_simulation_data().front()));
         }
 
         if (sim_vec.size() != (size_t)num_iterations) {
@@ -1445,7 +1417,7 @@ void post_order(smt::Term& root,
                 } else {
                     substitution_map.insert({current, cnode});
                     hash_term_map[current_hash].push_back(cnode);
-                    node_data_map[cnode] = sim_data;
+                    node_data_map[cnode] = std::move(sim_data);
                 }
                 update_progress(MAP_UPDATE);
                 processed_nodes++;

@@ -7,6 +7,7 @@ set(WASIM_MINOR 1)   # Minor component of WASIM version
 set(WASIM_RELEASE 1) # Release component of WASIM version
 
 add_compile_options(-O3)
+add_compile_options(-g)
 
 
 # handle different versions of CMake
@@ -328,8 +329,8 @@ endif()
 add_executable(test_circuitX "apps/circuitX.cpp")
 target_link_libraries(test_circuitX wasim-lib)
 
-# add_executable(test "apps/test.cpp")
-# target_link_libraries(test wasim-lib)
+add_executable(test "apps/test.cpp")
+target_link_libraries(test wasim-lib)
 
 # generate dependent header
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/config/testpath.h.in"  "${CMAKE_CURRENT_SOURCE_DIR}/config/testpath.h")
