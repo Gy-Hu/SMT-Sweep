@@ -261,16 +261,11 @@ void btor_bv_operation_2children(const smt::Op& op,
     
     if(op.prim_op == PrimOp::BVAdd) {
         auto result = btor_bv_add(btor_child_1, btor_child_2);
-        if(!result){
-            std::cerr << "Error: btor_bv_add returned null." << std::endl;
-            throw std::runtime_error("Error: btor_bv_add returned null.");
-        }
         sim_data.push_back(btor_bv_add(btor_child_1, btor_child_2));
     } 
     else if(op.prim_op == PrimOp::BVAnd) {
         sim_data.push_back(btor_bv_add(btor_child_1, btor_child_2));
         auto result = btor_bv_and(btor_child_1, btor_child_2);
-        cout << "result_width:" << result->width << endl;
     }
     else if(op.prim_op == PrimOp::And) {
         sim_data.push_back(btor_bv_and(btor_child_1, btor_child_2));
@@ -449,8 +444,6 @@ void process_two_children_simulation(const smt::TermVec & children,
     }else { // for other bit-vector operations
         const auto& child_1 = children[0];
         const auto& child_2 = children[1];
-        cout << "child_1: " << child_1->get_op().to_string() << endl;
-        cout << "child_2: " << child_2->get_op().to_string() << endl;
 
 
         // If substitution happened, we must get the resolved node and use its simulation data
@@ -499,27 +492,9 @@ void process_three_children_simulation(const smt::TermVec& children,
     const auto& sim_data_3 = node_data_map.at(children[2]).get_simulation_data();
 
     //debug
-        if (sim_data_1.size() != static_cast<size_t>(num_iterations)) {
-            std::ostringstream oss;
-            oss << "[Simulation Error] sim_data_1 size mismatch detected!\n"
-                << "  - sim_data_1.size(): " << sim_data_1.size() << "\n"
-                << "  - expected num_iterations: " << num_iterations;
-            throw std::runtime_error(oss.str());
-        }
-        if (sim_data_2.size() != static_cast<size_t>(num_iterations)) {
-            std::ostringstream oss;
-            oss << "[Simulation Error] sim_data_2 size mismatch detected!\n"
-                << "  - sim_data_2.size(): " << sim_data_2.size() << "\n"
-                << "  - expected num_iterations: " << num_iterations;
-            throw std::runtime_error(oss.str());
-        }
-        if (sim_data_3.size() != static_cast<size_t>(num_iterations)) {
-            std::ostringstream oss;
-            oss << "[Simulation Error] sim_data_3 size mismatch detected!\n"
-                << "  - sim_data_3.size(): " << sim_data_3.size() << "\n"
-                << "  - expected num_iterations: " << num_iterations;
-            throw std::runtime_error(oss.str());
-        }
+    assert(sim_data_1.size() == static_cast<size_t>(num_iterations));
+    assert(sim_data_2.size() == static_cast<size_t>(num_iterations));
+    assert(sim_data_3.size() == static_cast<size_t>(num_iterations));
     
 
     for (size_t i = 0; i < num_iterations; i++) {
@@ -1275,21 +1250,21 @@ void post_order(smt::Term& root,
 
     // Function to update and display progress
     auto update_progress = [&](SweepingStep step) {
-        // current_step = step;
-        // const int bar_width = 50;
-        // float progress = (float)processed_nodes / total_nodes;
+        current_step = step;
+        const int bar_width = 50;
+        float progress = (float)processed_nodes / total_nodes;
         
-        // std::cout << "\r[";
-        // int pos = bar_width * progress;
-        // for (int i = 0; i < bar_width; ++i) {
-        //     if (i < pos) std::cout << "=";
-        //     else if (i == pos) std::cout << ">";
-        //     else std::cout << " ";
-        // }
-        // std::cout << "] " << int(progress * 100.0) << "% | "
-        //           << "Step: " << step_names[step] << " | "
-        //           << processed_nodes << "/" << total_nodes << " nodes"
-        //           << std::flush;
+        std::cout << "\r[";
+        int pos = bar_width * progress;
+        for (int i = 0; i < bar_width; ++i) {
+            if (i < pos) std::cout << "=";
+            else if (i == pos) std::cout << ">";
+            else std::cout << " ";
+        }
+        std::cout << "] " << int(progress * 100.0) << "% | "
+                  << "Step: " << step_names[step] << " | "
+                  << processed_nodes << "/" << total_nodes << " nodes"
+                  << std::flush;
     };
 
     while(!node_stack.empty()) {
@@ -1309,7 +1284,6 @@ void post_order(smt::Term& root,
             visited = true;
         } else {
             TermVec children(current->begin(), current->end());
-            cout << "[Processing] " << current->get_op().to_string() << endl;
 
             if(current->is_value()) { // constant
                 update_progress(CONST_NODE);
@@ -1317,7 +1291,6 @@ void post_order(smt::Term& root,
                 substitution_map.insert({current, current});
                 hash_term_map[node_data_map[current].hash()].push_back(current);
                 processed_nodes++;
-                cout << "[Constant] " << current->to_string() << endl;
             } 
 
             else if(current->is_symbolic_const() && current->get_op().is_null()) { // leaf nodes
@@ -1327,7 +1300,6 @@ void post_order(smt::Term& root,
                 simulate_leaf_node(current, num_iterations, node_data_map, dump_file_path, load_file_path);
                 substitution_map.insert({current, current}); 
                 processed_nodes++;
-                cout << "[Leaf] " << current->to_string() << endl;
             }
             
             else { // compute simulation data for current node
@@ -1342,27 +1314,17 @@ void post_order(smt::Term& root,
                 for (size_t i = 0; i < child_size; ++ i){
                     if (children_substituted.at(i) != children.at(i)) {
                         substitution_happened = true;
-                        std::cout << "[Substitution] " << std::endl;
                         break;
                     }
                 }
                 
                 auto op_type = current->get_op();
                 Term cnode = substitution_happened ? solver->make_term(op_type, children_substituted) : current;
-                cout << "[Simulation] " << cnode->to_string() << endl;
 
                 NodeData sim_data;
                 Term term_eq = nullptr; 
-                compute_simulation(children_substituted, num_iterations, op_type, node_data_map, all_luts, sim_data);
-                for (const auto& v : sim_data.get_simulation_data()) {
-                    if (!v) {
-                        std::cerr << "[Error] sim_data contains nullptr\n";
-                        abort(); // 或者 throw std::runtime_error
-                    }
-                }
-                
+                compute_simulation(children_substituted, num_iterations, op_type, node_data_map, all_luts, sim_data);           
                 auto current_hash = sim_data.hash();
-                cout << "[Hash] " << current_hash << endl;
 
                 update_progress(EQUIV_CHECK);
                 TryFindResult result = try_find_equiv_term(cnode, 

@@ -1,4 +1,5 @@
 #include "./sweeping.h"
+#include <gflags/gflags.h>
 
 #define SWEEPING_UTILS_H
 
@@ -176,5 +177,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Total execution time: " << total_time / 1000.0 << " s" << std::endl;
     std::cout << "============================" << std::endl;
 
+    gflags::ShutDownCommandLineFlags();
     return 0;
 }
