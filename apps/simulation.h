@@ -576,7 +576,12 @@ BtorBitVectorPtr btor_bv_uint64_to_bv(uint64_t value, uint32_t bw)
 
 BtorBitVectorPtr btor_bv_add(const BtorBitVector& a, const BtorBitVector& b)
 {
+  if (a.width != b.width) {
+    std::cerr << "[Error] btor_bv_add width mismatch: "
+              << "a.width = " << a.width << ", "
+              << "b.width = " << b.width << std::endl;
     assert(a.width == b.width);
+}
 
 #ifdef BTOR_USE_GMP
     auto res = std::make_unique<BtorBitVector>(a.width);
@@ -641,7 +646,13 @@ BtorBitVectorPtr btor_bv_add(const BtorBitVector& a, const BtorBitVector& b)
 // }
 BtorBitVectorPtr btor_bv_and(const BtorBitVector& a, const BtorBitVector& b)
 {
-    assert(a.width == b.width);
+    if (a.width != b.width) {
+        std::cerr << "[Error] btor_bv_and width mismatch: "
+                  << "a.width = " << a.width << ", "
+                  << "b.width = " << b.width << std::endl;
+        assert(a.width == b.width);
+    }
+    
 
 #ifdef BTOR_USE_GMP
     auto res = std::make_unique<BtorBitVector>(a.width);
@@ -1367,30 +1378,30 @@ BtorBitVectorPtr btor_bv_ite(const BtorBitVector& cond,
   const BtorBitVector& then_bv,
   const BtorBitVector& else_bv)
 {
-assert(then_bv.width == else_bv.width);
+    assert(then_bv.width == else_bv.width);
 
 #ifdef BTOR_USE_GMP
-if (btor_bv_is_one(cond))
-return btor_bv_copy(then_bv);
-else
-return btor_bv_copy(else_bv);
+    if (btor_bv_is_one(cond))
+    return btor_bv_copy(then_bv);
+    else
+    return btor_bv_copy(else_bv);
 #else
-assert(cond.len == 1);
-assert(then_bv.len == else_bv.len);
+    assert(cond.len == 1);
+    assert(then_bv.len == else_bv.len);
 
-auto wrapper = std::make_unique<BtorBitVectorWrapper>(then_bv.width);
-BtorBitVector* res = wrapper->bv.get();
+    auto wrapper = std::make_unique<BtorBitVectorWrapper>(then_bv.width);
+    BtorBitVector* res = wrapper->bv.get();
 
-BTOR_BV_TYPE cc = btor_bv_get_bit(&cond, 0) ? ~static_cast<BTOR_BV_TYPE>(0) : 0;
-BTOR_BV_TYPE nn = ~cc;
+    BTOR_BV_TYPE cc = btor_bv_get_bit(&cond, 0) ? ~static_cast<BTOR_BV_TYPE>(0) : 0;
+    BTOR_BV_TYPE nn = ~cc;
 
-for (uint32_t i = 0; i < then_bv.len; ++i)
-res->bits[i] = (cc & then_bv.bits[i]) | (nn & else_bv.bits[i]);
+    for (uint32_t i = 0; i < then_bv.len; ++i)
+    res->bits[i] = (cc & then_bv.bits[i]) | (nn & else_bv.bits[i]);
 
-set_rem_bits_to_zero(res);
-assert(rem_bits_zero_dbg(res));
+    set_rem_bits_to_zero(res);
+    assert(rem_bits_zero_dbg(res));
 
-return std::move(wrapper->bv_ptr);
+    return std::move(wrapper->bv_ptr);
 #endif
 }
 
