@@ -59,8 +59,9 @@ int main(int argc, char* argv[]) {
     const auto& property = btor_parser.propvec(); // all properties here
     const auto& idvec = btor_parser.idvec();
 
-    // cout << "Constraints: " << constraints.size() << endl;
+    cout << "Constraints: " << constraints.size() << endl;
     for(auto c : constraints) {
+        cout << "Constraint: " << c << endl;
         solver->assert_formula(c);
     }
 
