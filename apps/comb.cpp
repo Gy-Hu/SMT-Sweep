@@ -75,7 +75,7 @@ int main(int argc, char* argv[]) {
     //Array init
     initialize_arrays({&sts}, all_luts, substitution_map, debug);
 
-    std::cout << ">> Dump Path = " << dump_input_file << std::endl;
+    // std::cout << ">> Dump Path = " << dump_input_file << std::endl;
     //simulation
     simulation(input_terms, num_iterations, node_data_map, dump_input_file, load_input_file, constraints);
     for(auto i : input_terms){
