@@ -70,6 +70,7 @@ int main(int argc, char* argv[]) {
     //     return 2;
     // }
 
+    
     for (unsigned i = 1; i<=bound; ++i) {
         
         sim.sim_one_step();
@@ -96,6 +97,12 @@ int main(int argc, char* argv[]) {
 
             //FIXME: constraint get value -> input quality
             auto const_start_time = std::chrono::high_resolution_clock::now();
+            std::ofstream outfile("simulation_results_sa_annealed.txt", std::ios::out | std::ios::app);
+            if (!outfile.is_open()) {
+                std::cerr << "[ERROR] Failed to open output file!" << std::endl;
+                return 0;
+            }
+
             for(auto constraint : constraints){
                 // std::cout << "====constraint: " << constraint->to_string() << endl;
                 solver->push();
@@ -103,22 +110,40 @@ int main(int argc, char* argv[]) {
                 for(auto j = 0 ; j < num_iterations; ++j){
                     auto result = solver->check_sat();
                     if(result.is_sat()){
+                        outfile << "=== Iteration " << j << " ===" << std::endl;
+                        TermVec eq_terms;
                         for(auto i : combined_terms){
                             auto val = solver->get_value(i);
-                            // cout << "input : " << i->to_string() << " , value: " << val->to_string() << std::endl;
-                            //store i and val in node_data_map, i not exist in node_data_map
-                            auto clean_val = val->to_string().substr(2);
+                            Term eq  = solver->make_term(Equal, i, val);
+                            eq_terms.push_back(eq);
+                            
+                            std::string val_str = val->to_string();
+                            std::string clean_val = (val_str.size() > 2) ? val_str.substr(2) : val_str;
                             auto bv_input = btor_bv_const(clean_val.c_str(), i->get_sort()->get_width());
                             node_data_map[i].get_simulation_data().push_back(std::move(bv_input));
+                            outfile << "Input: " << i->to_string() << " = " << clean_val << std::endl;
                         }
+
+                        add_similarity_constraint_sa_annealed(solver, eq_terms, combined_terms.size(), j, num_iterations);
+                        
                     } else {
                         std::cout << "[ERROR] constraint is unsat!" << std::endl;
                     }
+                    cout << "iteration: " << j << " done" << endl;
                 }
             }
             auto const_end_time = std::chrono::high_resolution_clock::now();
             auto const_time = std::chrono::duration_cast<std::chrono::milliseconds>(const_end_time - const_start_time).count();
             std::cout << "========Constraint check time: " << const_time  << " ms ============" << std::endl;
+
+            for (const auto &[term, data] : node_data_map) {
+                if (data.get_simulation_data().size() != num_iterations) {
+                    std::cerr << "[ERROR] Term " << term->to_string()
+                              << " has " << data.get_simulation_data().size()
+                              << " values, expected " << num_iterations << std::endl;
+                    assert(false); // 触发调试断点
+                }
+            }
         
 
 

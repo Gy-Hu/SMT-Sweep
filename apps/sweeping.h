@@ -21,7 +21,6 @@
 #include <getopt.h>
 
 #include "simulation.h"
-#include "constraint.h"
 
 #include <filesystem>
 #include <fstream>
@@ -827,8 +826,8 @@ void simulation(const TermIterable & input_terms,
                 value_str = std::string(pad_len, '0') + value_str;
             }
 
-            // auto bv_input = btor_bv_const(value_str.c_str(), term->get_sort()->get_width());
-            // node_data_map[term].get_simulation_data().push_back(btor_bv_const(value_str.c_str(), term->get_sort()->get_width()));
+            auto bv_input = btor_bv_const(value_str.c_str(), term->get_sort()->get_width());
+            node_data_map[term].get_simulation_data().push_back(btor_bv_const(value_str.c_str(), term->get_sort()->get_width()));
             if (dumpfile.is_open()) dumpfile << term->to_string() << " = " << value_str << "\n";
         }
         if (dumpfile.is_open()) dumpfile << "\n";
@@ -1200,6 +1199,170 @@ void fill_simulation_data_for_all_nodes(std::unordered_map<Term, NodeData>& node
         }
     }
 }
+
+//method 2
+// void add_similarity_constraint(SmtSolver & solver,
+//                                const std::vector<Term> & eq_terms,
+//                                int input_size)
+// {
+//     // 根据 input 大小自动设置 k
+//     int k;
+//     double percent;
+
+//     percent = 0.05;
+//     k = static_cast<int>(std::ceil(percent * input_size));
+
+//     // 枚举所有 size-(k+1) 子集，并阻止它们同时为 true
+//     // i.e., for all combinations of (k+1) indices: ¬(eq[i1] ∧ eq[i2] ∧ ... ∧ eq[ik+1])
+//     std::vector<Term> all_clauses;
+//     const size_t n = eq_terms.size();
+
+//     if (k >= static_cast<int>(n)) {
+//         // Nothing to block: allow all
+//         return;
+//     }
+
+//     // Optimization: limit number of clauses for large n
+//     const size_t max_clauses = 10000;
+//     size_t clause_count = 0;
+
+//     std::vector<size_t> indices(k + 1);
+//     std::iota(indices.begin(), indices.end(), 0);
+
+//     auto next_combination = [&](std::vector<size_t>& v, size_t max) {
+//         for (int i = static_cast<int>(v.size()) - 1; i >= 0; --i) {
+//             if (v[i] < max - (v.size() - i)) {
+//                 ++v[i];
+//                 for (size_t j = i + 1; j < v.size(); ++j) {
+//                     v[j] = v[j - 1] + 1;
+//                 }
+//                 return true;
+//             }
+//         }
+//         return false;
+//     };
+
+//     do {
+//         Term conj = eq_terms[indices[0]];
+//         for (size_t i = 1; i < indices.size(); ++i) {
+//             conj = solver->make_term(And, conj, eq_terms[indices[i]]);
+//         }
+//         Term clause = solver->make_term(Not, conj);
+//         all_clauses.push_back(clause);
+//         ++clause_count;
+//     } while (next_combination(indices, n) && clause_count < max_clauses);
+
+//     Term final_constraint = and_vec(all_clauses, solver);
+//     solver->assert_formula(final_constraint);
+// }
+
+//method 3
+void add_similarity_constraint_sa(SmtSolver & solver,
+                                  const std::vector<Term> & eq_terms,
+                                  int input_size,
+                                  double percent = 0.01,
+                                  int sample_trials = 512,
+                                  int max_clause_terms = 6,
+                                  int seed = 42)
+{
+    // 计算最多允许相同的输入数 k
+    int k = static_cast<int>(std::ceil(percent * input_size));
+    if (k <= 0) k = 1;
+
+    if (eq_terms.size() <= static_cast<size_t>(k)) {
+        return;  // nothing to block
+    }
+
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<size_t> dist(0, eq_terms.size() - 1);
+    std::vector<Term> blocking_clauses;
+
+    for (int trial = 0; trial < sample_trials; ++trial) {
+        std::unordered_set<size_t> selected_indices;
+        while (selected_indices.size() < static_cast<size_t>(k + 1)) {
+            selected_indices.insert(dist(rng));
+        }
+
+        std::vector<Term> conjunction;
+        for (auto idx : selected_indices) {
+            conjunction.push_back(eq_terms[idx]);
+        }
+
+        // 构造 ¬(eq1 ∧ eq2 ∧ ... ∧ eq_{k+1})
+        Term clause = conjunction[0];
+        for (size_t i = 1; i < conjunction.size(); ++i) {
+            clause = solver->make_term(And, clause, conjunction[i]);
+        }
+        blocking_clauses.push_back(solver->make_term(Not, clause));
+    }
+
+    Term final_block = and_vec(blocking_clauses, solver);
+    solver->assert_formula(final_block);
+
+    // Optional debug log
+    std::cout << "[SA Blocking] Input size: " << input_size
+              << ", allowed match: " << k
+              << ", trials: " << sample_trials
+              << ", each clause size: " << (k + 1)
+              << ", total clauses: " << blocking_clauses.size()
+              << std::endl;
+}
+
+
+void add_similarity_constraint_sa_annealed(
+    SmtSolver & solver,
+    const std::vector<Term> & eq_terms,
+    int input_size,
+    int current_iter,
+    int max_iter,
+    double base_percent = 0.01,
+    double anneal_rate = 0.10,
+    int sample_trials = 512,
+    int seed = 42)
+{
+    // 动态 percent 调整
+    double percent = base_percent + anneal_rate * (static_cast<double>(current_iter) / max_iter);
+    if (percent > 1.0) percent = 1.0;
+
+    int k = static_cast<int>(std::ceil(percent * input_size));
+    if (k <= 0) k = 1;
+
+    if (eq_terms.size() <= static_cast<size_t>(k)) {
+        return;  // nothing to block
+    }
+
+    std::mt19937 rng(seed + current_iter);  // 每轮扰动不同
+    std::uniform_int_distribution<size_t> dist(0, eq_terms.size() - 1);
+    std::vector<Term> blocking_clauses;
+
+    for (int trial = 0; trial < sample_trials; ++trial) {
+        std::unordered_set<size_t> selected_indices;
+        while (selected_indices.size() < static_cast<size_t>(k + 1)) {
+            selected_indices.insert(dist(rng));
+        }
+
+        std::vector<Term> conjunction;
+        for (auto idx : selected_indices) {
+            conjunction.push_back(eq_terms[idx]);
+        }
+
+        Term clause = conjunction[0];
+        for (size_t i = 1; i < conjunction.size(); ++i) {
+            clause = solver->make_term(And, clause, conjunction[i]);
+        }
+        blocking_clauses.push_back(solver->make_term(Not, clause));
+    }
+
+    Term final_block = and_vec(blocking_clauses, solver);
+    solver->assert_formula(final_block);
+
+    std::cout << "[SA Blocking] Iter " << current_iter << "/" << max_iter
+              << ", input size: " << input_size
+              << ", allowed same inputs ≤ " << k
+              << " (" << static_cast<int>(percent * 100.0) << "%)"
+              << ", clauses: " << blocking_clauses.size() << std::endl;
+}
+
 
 
 

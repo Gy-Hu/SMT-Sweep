@@ -325,11 +325,14 @@ if(NOT TARGET uninstall)
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
 endif()
 
-add_executable(comb "apps/comb.cpp")
-target_link_libraries(comb wasim-lib)
+# add_executable(comb "apps/comb.cpp")
+# target_link_libraries(comb wasim-lib)
 
 add_executable(bmc "apps/bmc.cpp")
 target_link_libraries(bmc wasim-lib)
+
+add_executable(divide "apps/divide.cpp")
+target_link_libraries(divide wasim-lib)
 
 # generate dependent header
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/config/testpath.h.in"  "${CMAKE_CURRENT_SOURCE_DIR}/config/testpath.h")
