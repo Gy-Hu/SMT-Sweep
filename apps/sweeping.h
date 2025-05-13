@@ -842,6 +842,157 @@ void simulation(const TermIterable & input_terms,
 
 
 
+template <typename TermIterable>
+void simulation_using_constraint(const TermIterable & input_terms,
+                int num_iterations,
+                std::unordered_map<Term, NodeData> & node_data_map,
+                std::string & dump_file_path,
+                std::string & load_file_path,
+                SmtSolver &solver,
+                double & success_rate,
+                const smt::TermVec & constraints)          
+{
+    GmpRandStateGuard rand_guard;
+    std::unordered_map<Term, std::string> constraint_input_map;
+    match_term_constraint_pattern(constraints, constraint_input_map);
+
+    int total_trials = 0;
+    int success_count = 0;
+
+
+    std::ofstream dumpfile;
+    if (!load_file_path.empty()) {
+        std::ifstream infile(load_file_path);
+        if (!infile.is_open()) {
+            std::cerr << "[ERROR] Cannot open simulation input file: " << load_file_path << std::endl;
+            return;
+        }
+
+        std::unordered_map<std::string, Term> term_lookup;
+        for (const auto & term : input_terms) {
+            term_lookup[term->to_string()] = term;
+        }
+
+        std::string line;
+        while (std::getline(infile, line)) {
+            if (line.empty() || line[0] == '[') continue;
+            size_t pos = line.find(" = ");
+            if (pos == std::string::npos) continue;
+            std::string term_str = line.substr(0, pos);
+            std::string val_str = line.substr(pos + 3);
+            
+            auto it = term_lookup.find(term_str);
+            if (it != term_lookup.end()) {
+                auto bv_input = btor_bv_const(val_str.c_str(), it->second->get_sort()->get_width());
+                node_data_map[it->second].get_simulation_data().push_back(btor_bv_const(val_str.c_str(), it->second->get_sort()->get_width()));
+            }
+        }
+        return;
+    }
+
+    if (!dump_file_path.empty()) {
+        dumpfile.open(dump_file_path, std::ios::app);
+        if (!dumpfile.is_open()) {
+            std::cerr << "[ERROR] Cannot open dump file: " << dump_file_path << std::endl;
+            return;
+        }
+        dumpfile << "[BEGIN NEW SIMULATION BATCH]\n";
+    }
+
+
+    std::unordered_map<Term, std::string> input_cache;
+
+    for (int i = 0; i < num_iterations;)
+    {
+        if (dumpfile.is_open()) dumpfile << "[SIMULATION ITERATION " << i << "]\n";
+        for (const auto & term : input_terms)
+        {
+            std::string value_str;
+            if (constraint_input_map.find(term) != constraint_input_map.end()) {
+                value_str = constraint_input_map[term];
+                if (value_str.rfind("EXTRACT_", 0) == 0) {
+                    std::string base(term->get_sort()->get_width(), '0');
+                    size_t eq_pos = value_str.find('=');
+                    std::string tag = value_str.substr(0, eq_pos);
+                    std::string extract_val = value_str.substr(eq_pos + 1);
+                    size_t hpos = tag.find('_', 8);
+                    int high = std::stoi(tag.substr(8, hpos - 8));
+                    int low = std::stoi(tag.substr(hpos + 1));
+                    value_str = apply_extract_constraint(base, high, low, extract_val);
+                }
+            }
+            else {
+                const auto width = term->get_sort()->get_width();
+                mpz_t input_mpz;
+                rand_guard.random_input(input_mpz, width);
+                std::unique_ptr<char, void (*)(void *)> input_str(
+                    mpz_get_str(nullptr, 2, input_mpz), free);
+                mpz_clear(input_mpz);
+                value_str = input_str.get();
+            }
+
+            if (value_str.size() < term->get_sort()->get_width()) {
+                size_t pad_len = term->get_sort()->get_width() - value_str.size();
+                value_str = std::string(pad_len, '0') + value_str;
+            }
+
+            input_cache[term] = value_str;
+
+            auto bv_input = btor_bv_const(value_str.c_str(), term->get_sort()->get_width());
+            // node_data_map[term].get_simulation_data().push_back(btor_bv_const(value_str.c_str(), term->get_sort()->get_width()));
+            // if (dumpfile.is_open()) dumpfile << term->to_string() << " = " << value_str << "\n";
+        }
+        solver->push(); // for constraint
+        Term con = solver->make_term(true);
+        for(const auto & term : input_terms) {
+            auto it = input_cache.find(term);
+            if (it != input_cache.end()) {
+               
+                std::string value_str = it->second;
+                Term value = solver->make_term(value_str.c_str(), solver->make_sort(BV, term->get_sort()->get_width()), 2);
+                auto term_value = solver->make_term(smt::Equal, term, value);
+                con = solver->make_term(smt::And, con, term_value);
+
+            }
+        }
+        for(auto constraint : constraints){
+                cout << "[Simulation] Adding constraint: " << constraint->to_string() << std::endl;
+                con = solver->make_term(smt::And, con, constraint);
+        }
+        solver->assert_formula(con);
+        auto result = solver->check_sat();
+        ++total_trials;
+        solver->pop();
+        if(result.is_sat()) {
+            i ++;
+            ++success_count;
+            for (const auto & term : input_terms) {
+                auto it = input_cache.find(term);
+                if (it != input_cache.end()) {
+                    auto bv_input = btor_bv_const(it->second.c_str(), term->get_sort()->get_width());
+                    node_data_map[term].get_simulation_data().push_back(btor_bv_const(it->second.c_str(), term->get_sort()->get_width()));
+                    if (dumpfile.is_open()) dumpfile << term->to_string() << " = " << it->second << "\n";
+                }
+            }
+        } 
+
+        if (dumpfile.is_open()) dumpfile << "\n";
+    }
+
+    if (total_trials > 0)
+        success_rate = static_cast<double>(success_count) / total_trials;
+    else
+        success_rate = 0.0;
+
+    if (dumpfile.is_open()) {
+        dumpfile << "[END SIMULATION BATCH]\n";
+        dumpfile.close();
+        std::cout << "[Simulation] Dumped input simulation values to: " << dump_file_path << std::endl;
+    }
+}
+
+
+
 void count_total_nodes(const smt::Term& root, int& total_nodes) {
     std::stack<Term> count_stack;
     std::unordered_set<Term> visited;
@@ -1502,7 +1653,7 @@ void post_order(smt::Term& root,
                     substitution_map.insert({current, result.term_eq});
                 else {
                     for(const auto & t : result.terms_for_solving) {
-                        if (unsat_count >= 10 && sat_count >= 10) break; //FIXME magic
+                        if (unsat_count >= 50 && sat_count >= 100) break; //FIXME magic
                         solver->push();
                         try {
                             auto eq = solver->make_term(Equal, t, cnode);

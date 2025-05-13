@@ -96,64 +96,67 @@ int main(int argc, char* argv[]) {
             
 
             //FIXME: constraint get value -> input quality
-            auto const_start_time = std::chrono::high_resolution_clock::now();
-            std::ofstream outfile("simulation_results_sa_annealed.txt", std::ios::out | std::ios::app);
-            if (!outfile.is_open()) {
-                std::cerr << "[ERROR] Failed to open output file!" << std::endl;
-                return 0;
-            }
+            // auto const_start_time = std::chrono::high_resolution_clock::now();
+            // std::ofstream outfile("simulation_results_sa_annealed.txt", std::ios::out | std::ios::app);
+            // if (!outfile.is_open()) {
+            //     std::cerr << "[ERROR] Failed to open output file!" << std::endl;
+            //     return 0;
+            // }
 
-            for(auto constraint : constraints){
-                // std::cout << "====constraint: " << constraint->to_string() << endl;
-                solver->push();
-                solver->assert_formula(constraint);
-                for(auto j = 0 ; j < num_iterations; ++j){
-                    auto result = solver->check_sat();
-                    if(result.is_sat()){
-                        outfile << "=== Iteration " << j << " ===" << std::endl;
-                        TermVec eq_terms;
-                        for(auto i : combined_terms){
-                            auto val = solver->get_value(i);
-                            Term eq  = solver->make_term(Equal, i, val);
-                            eq_terms.push_back(eq);
+            // for(auto constraint : constraints){
+            //     // std::cout << "====constraint: " << constraint->to_string() << endl;
+            //     solver->push();
+            //     solver->assert_formula(constraint);
+            //     for(auto j = 0 ; j < num_iterations; ++j){
+            //         auto result = solver->check_sat();
+            //         if(result.is_sat()){
+            //             outfile << "=== Iteration " << j << " ===" << std::endl;
+            //             TermVec eq_terms;
+            //             for(auto i : combined_terms){
+            //                 auto val = solver->get_value(i);
+            //                 Term eq  = solver->make_term(Equal, i, val);
+            //                 eq_terms.push_back(eq);
                             
-                            std::string val_str = val->to_string();
-                            std::string clean_val = (val_str.size() > 2) ? val_str.substr(2) : val_str;
-                            auto bv_input = btor_bv_const(clean_val.c_str(), i->get_sort()->get_width());
-                            node_data_map[i].get_simulation_data().push_back(std::move(bv_input));
-                            outfile << "Input: " << i->to_string() << " = " << clean_val << std::endl;
-                        }
+            //                 std::string val_str = val->to_string();
+            //                 std::string clean_val = (val_str.size() > 2) ? val_str.substr(2) : val_str;
+            //                 auto bv_input = btor_bv_const(clean_val.c_str(), i->get_sort()->get_width());
+            //                 node_data_map[i].get_simulation_data().push_back(std::move(bv_input));
+            //                 outfile << "Input: " << i->to_string() << " = " << clean_val << std::endl;
+            //             }
 
-                        add_similarity_constraint_sa_annealed(solver, eq_terms, combined_terms.size(), j, num_iterations);
+            //             add_similarity_constraint_sa_annealed(solver, eq_terms, combined_terms.size(), j, num_iterations);
                         
-                    } else {
-                        std::cout << "[ERROR] constraint is unsat!" << std::endl;
-                    }
-                    cout << "iteration: " << j << " done" << endl;
-                }
-            }
-            auto const_end_time = std::chrono::high_resolution_clock::now();
-            auto const_time = std::chrono::duration_cast<std::chrono::milliseconds>(const_end_time - const_start_time).count();
-            std::cout << "========Constraint check time: " << const_time  << " ms ============" << std::endl;
+            //         } else {
+            //             std::cout << "[ERROR] constraint is unsat!" << std::endl;
+            //         }
+            //         cout << "iteration: " << j << " done" << endl;
+            //     }
+            // }
+            // auto const_end_time = std::chrono::high_resolution_clock::now();
+            // auto const_time = std::chrono::duration_cast<std::chrono::milliseconds>(const_end_time - const_start_time).count();
+            // std::cout << "========Constraint check time: " << const_time  << " ms ============" << std::endl;
 
-            for (const auto &[term, data] : node_data_map) {
-                if (data.get_simulation_data().size() != num_iterations) {
-                    std::cerr << "[ERROR] Term " << term->to_string()
-                              << " has " << data.get_simulation_data().size()
-                              << " values, expected " << num_iterations << std::endl;
-                    assert(false); // 触发调试断点
-                }
-            }
-        
+            // for (const auto &[term, data] : node_data_map) {
+            //     if (data.get_simulation_data().size() != num_iterations) {
+            //         std::cerr << "[ERROR] Term " << term->to_string()
+            //                   << " has " << data.get_simulation_data().size()
+            //                   << " values, expected " << num_iterations << std::endl;
+            //         assert(false);
+            //     }
+            // }
+            
+            double success_rate = 0.00;
 
 
             initialize_arrays({&sts}, all_luts, substitution_map, debug);
             
             auto gen_input_start_time = std::chrono::high_resolution_clock::now();
-            simulation(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, constraints);
+            // simulation(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, constraints);
+            simulation_using_constraint(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, solver, success_rate, constraints);
             auto gen_input_end_time = std::chrono::high_resolution_clock::now();
             auto input_time = std::chrono::duration_cast<std::chrono::milliseconds>(gen_input_end_time - gen_input_start_time).count();
             std::cout << "========Input generation time: " << input_time << " ms for " << num_iterations  << " inputs ===========" << std::endl;
+            std::cout << "========Success rate: " << success_rate * 100 << "% for " << num_iterations  << " inputs ===========" << std::endl;
 
             for(auto i : input_terms){
                 assert(node_data_map[i].get_simulation_data().size() == num_iterations);
