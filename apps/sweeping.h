@@ -843,8 +843,8 @@ void simulation(const TermIterable & input_terms,
 
 
 template <typename TermIterable>
-void simulation_using_constraint(const TermIterable & input_terms,
-                int num_iterations,
+void simulation_using_constraint(TermIterable & input_terms,
+                int & num_iterations,
                 std::unordered_map<Term, NodeData> & node_data_map,
                 std::string & dump_file_path,
                 std::string & load_file_path,
@@ -859,7 +859,7 @@ void simulation_using_constraint(const TermIterable & input_terms,
     int total_trials = 0;
     int success_count = 0;
 
-
+    //load simulation input
     std::ofstream dumpfile;
     if (!load_file_path.empty()) {
         std::ifstream infile(load_file_path);
@@ -884,12 +884,22 @@ void simulation_using_constraint(const TermIterable & input_terms,
             auto it = term_lookup.find(term_str);
             if (it != term_lookup.end()) {
                 auto bv_input = btor_bv_const(val_str.c_str(), it->second->get_sort()->get_width());
-                node_data_map[it->second].get_simulation_data().push_back(btor_bv_const(val_str.c_str(), it->second->get_sort()->get_width()));
+                node_data_map[it->second].get_simulation_data().push_back(std::move(bv_input));
             }
         }
+
+        // Check if all input terms have simulation data
+        for (const auto & term : input_terms) {
+            if (node_data_map[term].get_simulation_data().empty()) {
+                std::cerr << "[ERROR] Missing simulation data for input: " << term->to_string() << std::endl;
+                throw std::runtime_error("Incomplete simulation input file.");
+            }
+        }
+
         return;
     }
 
+    //dump simulation input
     if (!dump_file_path.empty()) {
         dumpfile.open(dump_file_path, std::ios::app);
         if (!dumpfile.is_open()) {
@@ -899,38 +909,25 @@ void simulation_using_constraint(const TermIterable & input_terms,
         dumpfile << "[BEGIN NEW SIMULATION BATCH]\n";
     }
 
-
+    
     std::unordered_map<Term, std::string> input_cache;
+    std::chrono::duration<double> total_sat_time(0);
+    std::chrono::duration<double> total_unsat_time(0);
+
 
     for (int i = 0; i < num_iterations;)
     {
         if (dumpfile.is_open()) dumpfile << "[SIMULATION ITERATION " << i << "]\n";
         for (const auto & term : input_terms)
         {
-            std::string value_str;
-            if (constraint_input_map.find(term) != constraint_input_map.end()) {
-                value_str = constraint_input_map[term];
-                if (value_str.rfind("EXTRACT_", 0) == 0) {
-                    std::string base(term->get_sort()->get_width(), '0');
-                    size_t eq_pos = value_str.find('=');
-                    std::string tag = value_str.substr(0, eq_pos);
-                    std::string extract_val = value_str.substr(eq_pos + 1);
-                    size_t hpos = tag.find('_', 8);
-                    int high = std::stoi(tag.substr(8, hpos - 8));
-                    int low = std::stoi(tag.substr(hpos + 1));
-                    value_str = apply_extract_constraint(base, high, low, extract_val);
-                }
-            }
-            else {
-                const auto width = term->get_sort()->get_width();
-                mpz_t input_mpz;
-                rand_guard.random_input(input_mpz, width);
-                std::unique_ptr<char, void (*)(void *)> input_str(
-                    mpz_get_str(nullptr, 2, input_mpz), free);
-                mpz_clear(input_mpz);
-                value_str = input_str.get();
-            }
-
+            auto width = term->get_sort()->get_width();
+            mpz_t input_mpz;
+            rand_guard.random_input(input_mpz, width);
+            std::unique_ptr<char, void (*)(void *)> input_str(
+                mpz_get_str(nullptr, 2, input_mpz), free);
+            mpz_clear(input_mpz);
+            std::string value_str = input_str.get();
+        
             if (value_str.size() < term->get_sort()->get_width()) {
                 size_t pad_len = term->get_sort()->get_width() - value_str.size();
                 value_str = std::string(pad_len, '0') + value_str;
@@ -938,34 +935,85 @@ void simulation_using_constraint(const TermIterable & input_terms,
 
             input_cache[term] = value_str;
 
-            auto bv_input = btor_bv_const(value_str.c_str(), term->get_sort()->get_width());
+            // auto bv_input = btor_bv_const(value_str.c_str(), term->get_sort()->get_width());
             // node_data_map[term].get_simulation_data().push_back(btor_bv_const(value_str.c_str(), term->get_sort()->get_width()));
             // if (dumpfile.is_open()) dumpfile << term->to_string() << " = " << value_str << "\n";
         }
+
+        //FIXME
         solver->push(); // for constraint
-        Term con = solver->make_term(true);
+        TermVec con; // create term (a & b & c ...)  at given value
+
         for(const auto & term : input_terms) {
             auto it = input_cache.find(term);
             if (it != input_cache.end()) {
-               
                 std::string value_str = it->second;
                 Term value = solver->make_term(value_str.c_str(), solver->make_sort(BV, term->get_sort()->get_width()), 2);
                 auto term_value = solver->make_term(smt::Equal, term, value);
-                con = solver->make_term(smt::And, con, term_value);
-
+                con.push_back(term_value);
             }
         }
+
         for(auto constraint : constraints){
-                cout << "[Simulation] Adding constraint: " << constraint->to_string() << std::endl;
-                con = solver->make_term(smt::And, con, constraint);
+            // auto not_constraint = solver->make_term(smt::Not, constraint);
+            con.push_back(constraint);
         }
-        solver->assert_formula(con);
-        auto result = solver->check_sat();
+
+        auto start = std::chrono::high_resolution_clock::now();
+        auto result = solver->check_sat_assuming(con); // a=1 & b=0 & c=1 & ... & not(constraint)
+        //if unsat, find unsat core, erase, generate again
+
         ++total_trials;
-        solver->pop();
-        if(result.is_sat()) {
-            i ++;
+
+        if(result.is_unsat()) {
+            std::cout << "[Simulation] UNSAT at iteration " << i << "\n";
+            UnorderedTermSet out; // unsat core
+            solver->get_unsat_assumptions(out);
+
+            bool removed_any = false;
+            for (auto o : out) { // remove each term in unsat core
+                TermVec child(o->begin(), o->end());
+                Term input_term = child[0];
+                Term old_value = child[1];
+
+                if (o->get_op() == smt::Equal && input_term->is_symbolic_const()) {
+                    cout << "[UNSAT] Removing assumption: " << o->to_string() << std::endl;
+
+                    //change this to a new random value 
+                    int width = input_term->get_sort()->get_width();
+                    mpz_t rand_num;
+                    rand_guard.random_input(rand_num, width);
+                    std::unique_ptr<char, void (*)(void *)> rand_str(mpz_get_str(nullptr, 2, rand_num), free);
+                    std::string rand_val_str = rand_str.get();
+                    mpz_clear(rand_num);
+
+                    if (rand_val_str.size() < static_cast<size_t>(width)) {
+                        rand_val_str = std::string(width - rand_val_str.size(), '0') + rand_val_str;
+                    }
+
+                    Term new_val = solver->make_term(rand_val_str.c_str(), solver->make_sort(BV, width), 2);
+                    Term new_eq = solver->make_term(Equal, input_term, new_val);
+
+                    auto it = std::find(input_terms.begin(), input_terms.end(), input_term);
+                    if (it != input_terms.end()) {
+                        input_terms.erase(it);
+                        input_terms.push_back(new_eq);
+                        input_cache[input_term] = rand_val_str;
+                        removed_any = true;
+                        std::cout << "[UNSAT] Removed assumption"<< std::endl;
+                    } else {
+                        std::cerr << "[ERROR] Unsat assumption not found in con: " << o << std::endl;
+                        throw std::runtime_error("Unsat assumption not in assumption list");
+                    }
+                } else {
+                    std::cout << "[UNSAT] Skip non-input assumption: " << o << std::endl;
+                }
+            }
+        } 
+        else if(result.is_sat()) {
+            ++i;
             ++success_count;
+            std::cout << "[SAT] at iteration " << i << "\n";
             for (const auto & term : input_terms) {
                 auto it = input_cache.find(term);
                 if (it != input_cache.end()) {
@@ -974,10 +1022,19 @@ void simulation_using_constraint(const TermIterable & input_terms,
                     if (dumpfile.is_open()) dumpfile << term->to_string() << " = " << it->second << "\n";
                 }
             }
-        } 
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_seconds = end - start;
+
+            total_sat_time += elapsed_seconds;
+            std::cout << "[SAT] Iteration "<< i << " succeeded in " << elapsed_seconds.count() << " seconds.\n";
+        }
+
 
         if (dumpfile.is_open()) dumpfile << "\n";
     }
+
+    std::cout << "[Summary] Total SAT time: " << total_sat_time.count() << " seconds.\n";
+    std::cout << "[Summary] Total UNSAT time: " << total_unsat_time.count() << " seconds.\n";
 
     if (total_trials > 0)
         success_rate = static_cast<double>(success_count) / total_trials;
@@ -1351,170 +1408,138 @@ void fill_simulation_data_for_all_nodes(std::unordered_map<Term, NodeData>& node
     }
 }
 
-//method 2
-// void add_similarity_constraint(SmtSolver & solver,
-//                                const std::vector<Term> & eq_terms,
-//                                int input_size)
-// {
-//     // 根据 input 大小自动设置 k
-//     int k;
-//     double percent;
-
-//     percent = 0.05;
-//     k = static_cast<int>(std::ceil(percent * input_size));
-
-//     // 枚举所有 size-(k+1) 子集，并阻止它们同时为 true
-//     // i.e., for all combinations of (k+1) indices: ¬(eq[i1] ∧ eq[i2] ∧ ... ∧ eq[ik+1])
-//     std::vector<Term> all_clauses;
-//     const size_t n = eq_terms.size();
-
-//     if (k >= static_cast<int>(n)) {
-//         // Nothing to block: allow all
-//         return;
-//     }
-
-//     // Optimization: limit number of clauses for large n
-//     const size_t max_clauses = 10000;
-//     size_t clause_count = 0;
-
-//     std::vector<size_t> indices(k + 1);
-//     std::iota(indices.begin(), indices.end(), 0);
-
-//     auto next_combination = [&](std::vector<size_t>& v, size_t max) {
-//         for (int i = static_cast<int>(v.size()) - 1; i >= 0; --i) {
-//             if (v[i] < max - (v.size() - i)) {
-//                 ++v[i];
-//                 for (size_t j = i + 1; j < v.size(); ++j) {
-//                     v[j] = v[j - 1] + 1;
-//                 }
-//                 return true;
-//             }
-//         }
-//         return false;
-//     };
-
-//     do {
-//         Term conj = eq_terms[indices[0]];
-//         for (size_t i = 1; i < indices.size(); ++i) {
-//             conj = solver->make_term(And, conj, eq_terms[indices[i]]);
-//         }
-//         Term clause = solver->make_term(Not, conj);
-//         all_clauses.push_back(clause);
-//         ++clause_count;
-//     } while (next_combination(indices, n) && clause_count < max_clauses);
-
-//     Term final_constraint = and_vec(all_clauses, solver);
-//     solver->assert_formula(final_constraint);
-// }
-
-//method 3
-void add_similarity_constraint_sa(SmtSolver & solver,
-                                  const std::vector<Term> & eq_terms,
-                                  int input_size,
-                                  double percent = 0.01,
-                                  int sample_trials = 512,
-                                  int max_clause_terms = 6,
-                                  int seed = 42)
-{
-    // 计算最多允许相同的输入数 k
-    int k = static_cast<int>(std::ceil(percent * input_size));
-    if (k <= 0) k = 1;
-
-    if (eq_terms.size() <= static_cast<size_t>(k)) {
-        return;  // nothing to block
-    }
-
-    std::mt19937 rng(seed);
-    std::uniform_int_distribution<size_t> dist(0, eq_terms.size() - 1);
-    std::vector<Term> blocking_clauses;
-
-    for (int trial = 0; trial < sample_trials; ++trial) {
-        std::unordered_set<size_t> selected_indices;
-        while (selected_indices.size() < static_cast<size_t>(k + 1)) {
-            selected_indices.insert(dist(rng));
-        }
-
-        std::vector<Term> conjunction;
-        for (auto idx : selected_indices) {
-            conjunction.push_back(eq_terms[idx]);
-        }
-
-        // 构造 ¬(eq1 ∧ eq2 ∧ ... ∧ eq_{k+1})
-        Term clause = conjunction[0];
-        for (size_t i = 1; i < conjunction.size(); ++i) {
-            clause = solver->make_term(And, clause, conjunction[i]);
-        }
-        blocking_clauses.push_back(solver->make_term(Not, clause));
-    }
-
-    Term final_block = and_vec(blocking_clauses, solver);
-    solver->assert_formula(final_block);
-
-    // Optional debug log
-    std::cout << "[SA Blocking] Input size: " << input_size
-              << ", allowed match: " << k
-              << ", trials: " << sample_trials
-              << ", each clause size: " << (k + 1)
-              << ", total clauses: " << blocking_clauses.size()
-              << std::endl;
+// =========================== sa-guided method ===========================
+inline int hamming_distance(const std::vector<int> &a, const std::vector<int> &b) {
+    assert(a.size() == b.size());
+    int dist = 0;
+    for (size_t i = 0; i < a.size(); ++i)
+        dist += (a[i] != b[i]);
+    return dist;
 }
 
-
-void add_similarity_constraint_sa_annealed(
-    SmtSolver & solver,
-    const std::vector<Term> & eq_terms,
-    int input_size,
-    int current_iter,
-    int max_iter,
-    double base_percent = 0.01,
-    double anneal_rate = 0.10,
-    int sample_trials = 512,
-    int seed = 42)
-{
-    // 动态 percent 调整
-    double percent = base_percent + anneal_rate * (static_cast<double>(current_iter) / max_iter);
-    if (percent > 1.0) percent = 1.0;
-
-    int k = static_cast<int>(std::ceil(percent * input_size));
-    if (k <= 0) k = 1;
-
-    if (eq_terms.size() <= static_cast<size_t>(k)) {
-        return;  // nothing to block
+inline Term build_assignment_formula(SmtSolver & solver,
+                                     const std::vector<Term> & eq_terms,
+                                     const std::vector<int> & input_vec) {
+    TermVec assigns;
+    for (size_t i = 0; i < eq_terms.size(); ++i) {
+        Term val = solver->make_term(input_vec[i] ? "1" : "0", eq_terms[i]->get_sort());
+        assigns.push_back(solver->make_term(Equal, eq_terms[i], val));
     }
-
-    std::mt19937 rng(seed + current_iter);  // 每轮扰动不同
-    std::uniform_int_distribution<size_t> dist(0, eq_terms.size() - 1);
-    std::vector<Term> blocking_clauses;
-
-    for (int trial = 0; trial < sample_trials; ++trial) {
-        std::unordered_set<size_t> selected_indices;
-        while (selected_indices.size() < static_cast<size_t>(k + 1)) {
-            selected_indices.insert(dist(rng));
-        }
-
-        std::vector<Term> conjunction;
-        for (auto idx : selected_indices) {
-            conjunction.push_back(eq_terms[idx]);
-        }
-
-        Term clause = conjunction[0];
-        for (size_t i = 1; i < conjunction.size(); ++i) {
-            clause = solver->make_term(And, clause, conjunction[i]);
-        }
-        blocking_clauses.push_back(solver->make_term(Not, clause));
-    }
-
-    Term final_block = and_vec(blocking_clauses, solver);
-    solver->assert_formula(final_block);
-
-    std::cout << "[SA Blocking] Iter " << current_iter << "/" << max_iter
-              << ", input size: " << input_size
-              << ", allowed same inputs ≤ " << k
-              << " (" << static_cast<int>(percent * 100.0) << "%)"
-              << ", clauses: " << blocking_clauses.size() << std::endl;
+    return and_vec(assigns, solver);
 }
 
+void simulation_sa(const std::vector<Term> & input_terms,
+                const std::vector<Term> & constraints,
+                SmtSolver & solver,
+                std::unordered_map<Term, NodeData> & node_data_map,
+                int num_iterations,
+                const std::string & dump_file_path = "") {
 
+    int input_size = static_cast<int>(input_terms.size());
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
+    std::uniform_int_distribution<int> bit_dist(0, 1);
+
+    std::ofstream dump_file;
+    std::ofstream stats_file("sa_stats.csv");
+    stats_file << "round,attempts,accepted,energy,temperature\n";
+
+    if (!dump_file_path.empty()) {
+        dump_file.open(dump_file_path);
+        if (!dump_file.is_open()) {
+            std::cerr << "[SA] Failed to open dump file!" << std::endl;
+            return;
+        }
+    }
+
+    std::vector<std::vector<int>> input_history;
+    double T = 10.0;
+    int min_dist = std::ceil(0.05 * input_size);
+
+    int generated = 0;
+    while (generated < num_iterations) {
+        std::vector<int> current(input_size);
+        for (int i = 0; i < input_size; ++i)
+            current[i] = bit_dist(rng);
+
+        double curr_energy = 1.0;
+        bool success = false;
+        int accepted = 0;
+
+        for (int attempt = 0; attempt < 200; ++attempt) {
+            std::vector<int> candidate = current;
+            int flip_cnt = std::max(1, min_dist);
+            std::unordered_set<int> flip_indices;
+            while (flip_indices.size() < static_cast<size_t>(flip_cnt))
+                flip_indices.insert(rng() % input_size);
+            for (int idx : flip_indices) candidate[idx] = 1 - candidate[idx];
+
+            Term assign = build_assignment_formula(solver, input_terms, candidate);
+            solver->push();
+            solver->assert_formula(assign);
+            for (const Term & c : constraints)
+                solver->assert_formula(c);
+
+            auto result = solver->check_sat();
+            solver->pop();
+
+            double energy = result.is_sat() ? 0.0 : 1.0;
+            double delta = energy - curr_energy;
+            bool accept = (delta < 0) || (prob_dist(rng) < std::exp(-delta / T));
+
+            if (accept) {
+                current = candidate;
+                curr_energy = energy;
+                accepted++;
+            }
+
+            if (curr_energy == 0.0) {
+                bool far_enough = true;
+                for (const auto & hist : input_history) {
+                    if (hamming_distance(current, hist) < min_dist) {
+                        far_enough = false;
+                        break;
+                    }
+                }
+                if (far_enough) {
+                    success = true;
+                    stats_file << generated << "," << attempt+1 << "," << accepted << "," << curr_energy << "," << T << "\n";
+                    break;
+                }
+            }
+        }
+
+        if (success) {
+            input_history.push_back(current);
+            for (size_t i = 0; i < input_terms.size(); ++i) {
+                std::string bit_str = current[i] ? "1" : "0";
+                BtorBitVectorPtr val = btor_bv_char_to_bv(bit_str.c_str());
+                node_data_map[input_terms[i]].get_simulation_data().push_back(std::move(val));
+            }
+            if (dump_file.is_open()) {
+                dump_file << "[SIMULATION ROUND " << generated << "]\n";
+                for (size_t i = 0; i < input_terms.size(); ++i) {
+                    std::string bit_str = current[i] ? "1" : "0";
+                    dump_file << input_terms[i]->to_string() << " = " << bit_str << "\n";
+                }
+                dump_file << "\n";
+            }
+            generated++;
+        } else {
+            stats_file << generated << ",200," << accepted << "," << curr_energy << "," << T << "\n";
+            std::cerr << "[SA] Failed to generate valid input at sample " << generated << std::endl;
+        }
+        T *= 0.95;
+    }
+
+    if (dump_file.is_open()) {
+        dump_file.close();
+        std::cout << "[SA] Inputs dumped to: " << dump_file_path << std::endl;
+    }
+    stats_file.close();
+    std::cout << "[SA] Statistics written to sa_stats.csv" << std::endl;
+}
+// =========================== end for sa-guided method ===========================
 
 
 void post_order(smt::Term& root,

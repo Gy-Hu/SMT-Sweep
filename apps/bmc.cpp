@@ -47,8 +47,6 @@ int main(int argc, char* argv[]) {
 
     const auto& input_terms = btor_parser.inputsvec(); // all input here
     const auto& output_terms = btor_parser.get_output_terms(); // all output here
-    const auto& constraints = btor_parser.get_const_terms(); // all constraints here
-    const auto& property = btor_parser.propvec(); // all properties here
     const auto& idvec = btor_parser.idvec();
 
     SymbolicSimulator sim(sts, solver);
@@ -78,6 +76,11 @@ int main(int argc, char* argv[]) {
         
         if(i == bound) {
 
+            TermVec cons = sim.all_assumptions(); // this is the constraint
+            for(auto constraint : cons){
+                std::cout << "constraint: " << constraint->to_string() << std::endl;
+            }
+          
             // init for each bound
             std::unordered_map<Term, NodeData> node_data_map; // term -> sim_data
             std::unordered_map<uint32_t, TermVec> hash_term_map; // hash -> TermVec
@@ -85,15 +88,91 @@ int main(int argc, char* argv[]) {
             std::unordered_map<Term, std::unordered_map<std::string, std::string>> all_luts; // state -> lookup table
             auto root = sim.interpret_state_expr_on_curr_frame(prop, false);
 
-            smt::TermVec combined_terms = input_terms;
+            // smt::TermVec combined_terms = input_terms;
+            // smt::UnorderedTermSet out;
+            // smt::get_free_symbols(root,out);
+            // for (const auto & term : out) {
+            //     if (std::find(input_terms.begin(), input_terms.end(), term) == input_terms.end()) {
+            //         combined_terms.push_back(term);
+            //     }
+            // }
+
+            smt::UnorderedTermSet combined_set(input_terms.begin(), input_terms.end());
             smt::UnorderedTermSet out;
-            smt::get_free_symbols(root,out);
-            for (const auto & term : out) {
-                if (std::find(input_terms.begin(), input_terms.end(), term) == input_terms.end()) {
-                    combined_terms.push_back(term);
-                }
+            smt::get_free_symbols(root, out);
+            combined_set.insert(out.begin(), out.end());
+            smt::TermVec combined_terms(combined_set.begin(), combined_set.end());
+
+            
+
+           
+            double success_rate = 0.00;
+
+
+            initialize_arrays({&sts}, all_luts, substitution_map, debug);
+            
+            auto gen_input_start_time = std::chrono::high_resolution_clock::now();
+
+            std::cout << "========Input generation start==========" << std::endl;
+            // simulation(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, constraints);
+            simulation_using_constraint(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, solver, success_rate, cons);
+
+
+            auto gen_input_end_time = std::chrono::high_resolution_clock::now();
+            auto input_time = std::chrono::duration_cast<std::chrono::milliseconds>(gen_input_end_time - gen_input_start_time).count();
+            std::cout << "========Input generation time: " << input_time << " ms for " << num_iterations  << " inputs ===========" << std::endl;
+            std::cout << "========Success rate: " << success_rate * 100 << "% for " << num_iterations  << " inputs ===========" << std::endl;
+
+            for(auto i : input_terms){
+                assert(node_data_map[i].get_simulation_data().size() == num_iterations);
+                substitution_map.insert({i, i});
+                hash_term_map[node_data_map[i].hash()].push_back(i);
             }
             
+            int count = 0;
+            int unsat_count = 0;
+            int sat_count = 0;
+            int total_nodes = 0;
+            int total_nodes_after = 0;
+            std::chrono::milliseconds total_sat_time(0);
+            std::chrono::milliseconds total_unsat_time(0); 
+            
+            //end of init
+            post_order(root, node_data_map, hash_term_map, substitution_map, all_luts, count, unsat_count, sat_count, solver, num_iterations,dump_smt, input_terms, property_check_timeout_ms, debug, dump_input_file, load_input_file, total_sat_time,  total_unsat_time);
+            print_time();
+            root = substitution_map.at(root);
+            count_total_nodes(root, total_nodes_after);
+            cout << "total nodes: " << total_nodes_after << endl;
+            std::cout<<std::endl;
+            if (check_prop(
+                root,
+                sim.all_assumptions(),
+                solver )) {
+                print_time();
+                std::cout << "[bmc] bound " << i << " passed." << std::endl;
+                cout << "total: " << count << " , unsat: " << unsat_count << " , sat: " << sat_count << ", unsat_time: "<< total_unsat_time.count() << " ms, sat_time: " << total_sat_time.count() << " ms" << endl;
+            } else {
+                print_time();
+                std::cout << "[bmc] failed at bound " << i << std::endl;
+                cout << "total: " << count << " , unsat: " << unsat_count << " , sat: " << sat_count << ", unsat_time: "<< total_unsat_time.count() << " ms , sat_time: " << total_sat_time.count() << " ms" << endl;
+                return 2;
+            }
+
+            node_data_map.clear();
+            substitution_map.clear();
+            hash_term_map.clear();
+        }
+    }
+
+    auto program_end_time = std::chrono::high_resolution_clock::now();
+    auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(program_end_time - program_start_time).count();
+    std::cout << "Total execution time: " << total_time / 1000.0 << " s" << std::endl;
+    gflags::ShutDownCommandLineFlags();
+
+    return 0;
+}
+
+
 
             //FIXME: constraint get value -> input quality
             // auto const_start_time = std::chrono::high_resolution_clock::now();
@@ -144,66 +223,3 @@ int main(int argc, char* argv[]) {
             //         assert(false);
             //     }
             // }
-            
-            double success_rate = 0.00;
-
-
-            initialize_arrays({&sts}, all_luts, substitution_map, debug);
-            
-            auto gen_input_start_time = std::chrono::high_resolution_clock::now();
-            // simulation(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, constraints);
-            simulation_using_constraint(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, solver, success_rate, constraints);
-            auto gen_input_end_time = std::chrono::high_resolution_clock::now();
-            auto input_time = std::chrono::duration_cast<std::chrono::milliseconds>(gen_input_end_time - gen_input_start_time).count();
-            std::cout << "========Input generation time: " << input_time << " ms for " << num_iterations  << " inputs ===========" << std::endl;
-            std::cout << "========Success rate: " << success_rate * 100 << "% for " << num_iterations  << " inputs ===========" << std::endl;
-
-            for(auto i : input_terms){
-                assert(node_data_map[i].get_simulation_data().size() == num_iterations);
-                substitution_map.insert({i, i});
-                hash_term_map[node_data_map[i].hash()].push_back(i);
-            }
-            
-            
-            int count = 0;
-            int unsat_count = 0;
-            int sat_count = 0;
-            int total_nodes = 0;
-            int total_nodes_after = 0;
-            std::chrono::milliseconds total_sat_time(0);
-            std::chrono::milliseconds total_unsat_time(0); 
-            
-            //end of init
-            post_order(root, node_data_map, hash_term_map, substitution_map, all_luts, count, unsat_count, sat_count, solver, num_iterations,dump_smt, input_terms, property_check_timeout_ms, debug, dump_input_file, load_input_file, total_sat_time,  total_unsat_time);
-            print_time();
-            root = substitution_map.at(root);
-            count_total_nodes(root, total_nodes_after);
-            cout << "total nodes: " << total_nodes_after << endl;
-            std::cout<<std::endl;
-            if (check_prop(
-                root,
-                sim.all_assumptions(),
-                solver )) {
-                print_time();
-                std::cout << "[bmc] bound " << i << " passed." << std::endl;
-                cout << "total: " << count << " , unsat: " << unsat_count << " , sat: " << sat_count << ", unsat_time: "<< total_unsat_time.count() << " ms, sat_time: " << total_sat_time.count() << " ms" << endl;
-            } else {
-                print_time();
-                std::cout << "[bmc] failed at bound " << i << std::endl;
-                cout << "total: " << count << " , unsat: " << unsat_count << " , sat: " << sat_count << ", unsat_time: "<< total_unsat_time.count() << " ms , sat_time: " << total_sat_time.count() << " ms" << endl;
-                return 2;
-            }
-
-            node_data_map.clear();
-            substitution_map.clear();
-            hash_term_map.clear();
-        }
-    }
-
-    auto program_end_time = std::chrono::high_resolution_clock::now();
-    auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(program_end_time - program_start_time).count();
-    std::cout << "Total execution time: " << total_time / 1000.0 << " s" << std::endl;
-    gflags::ShutDownCommandLineFlags();
-
-    return 0;
-}
