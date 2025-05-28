@@ -1,0 +1,58 @@
+// After using constraints in simulation
+[Summary] Total SAT time: 0.0407111 seconds.
+[Summary] Total UNSAT time: 11.3208 seconds.
+========Input generation time: 11949 ms for 500 inputs ===========
+========Success rate: 100% for 500 inputs ===========
+Begin sweeping with 4895 nodes...
+[=================================================>] 99% | Step: MAP UPDATE | 4894/4895 nodess
+Sweeping Summary Statistics:
+============================
+Total unique hash values: 3851
+Total terms processed: 4737
+Shared hash value ratio: 18.70%
+
+Top 5 Hash Values by Term Frequency:
+-----------------------------------
+  Hash Value | Term Count | % of Total
+-----------------------------------
+   512705097 |        114 |      2.41%
+  2650932652 |         53 |      1.12%
+  2805350363 |         18 |      0.38%
+   441542218 |          9 |      0.19%
+  1108944840 |          7 |      0.15%
+============================
+Sweeping done, begin the last solving using bitwuzla for this property
+[17.07 s]  total nodes: 4803
+
+[22.75 s]  [bmc] bound 7 passed.
+total: 666 , unsat: 50 , sat: 616, unsat_time: 28 ms, sat_time: 3823 ms
+Total execution time: 39.92 s
+
+
+// Previous SMT-Sweep
+========Input generation time: 60 ms for 500 inputs ===========
+========Success rate: 0% for 500 inputs ===========
+Begin sweeping with 4895 nodes...
+[=================================================>] 99% | Step: MAP UPDATE | 4894/4895 nodess
+Sweeping Summary Statistics:
+============================
+Total unique hash values: 3834
+Total terms processed: 4737
+Shared hash value ratio: 19.06%
+
+Top 5 Hash Values by Term Frequency:
+-----------------------------------
+  Hash Value | Term Count | % of Total
+-----------------------------------
+   512705097 |        119 |      2.51%
+  2650932652 |         51 |      1.08%
+  2805350363 |         17 |      0.36%
+  2101049213 |          9 |      0.19%
+  1845938439 |          9 |      0.19%
+============================
+Sweeping done, begin the last solving using bitwuzla for this property
+[1.86 s]  total nodes: 4811
+
+[28.48 s]  [bmc] bound 7 passed.
+total: 719 , unsat: 50 , sat: 669, unsat_time: 20 ms, sat_time: 655 ms
+Total execution time: 30.44 s

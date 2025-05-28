@@ -79,6 +79,7 @@ int main(int argc, char* argv[]) {
             TermVec cons = sim.all_assumptions(); // this is the constraint
             for(auto constraint : cons){
                 std::cout << "constraint: " << constraint->to_string() << std::endl;
+                solver->assert_formula(constraint);
             }
           
             // init for each bound
@@ -88,34 +89,21 @@ int main(int argc, char* argv[]) {
             std::unordered_map<Term, std::unordered_map<std::string, std::string>> all_luts; // state -> lookup table
             auto root = sim.interpret_state_expr_on_curr_frame(prop, false);
 
-            // smt::TermVec combined_terms = input_terms;
-            // smt::UnorderedTermSet out;
-            // smt::get_free_symbols(root,out);
-            // for (const auto & term : out) {
-            //     if (std::find(input_terms.begin(), input_terms.end(), term) == input_terms.end()) {
-            //         combined_terms.push_back(term);
-            //     }
-            // }
-
+            //get free symbols
             smt::UnorderedTermSet combined_set(input_terms.begin(), input_terms.end());
             smt::UnorderedTermSet out;
             smt::get_free_symbols(root, out);
             combined_set.insert(out.begin(), out.end());
             smt::TermVec combined_terms(combined_set.begin(), combined_set.end());
 
-            
-
-           
-            double success_rate = 0.00;
-
-
+            //init for array
             initialize_arrays({&sts}, all_luts, substitution_map, debug);
-            
-            auto gen_input_start_time = std::chrono::high_resolution_clock::now();
 
+            double success_rate = 0.00;
+            auto gen_input_start_time = std::chrono::high_resolution_clock::now();
             std::cout << "========Input generation start==========" << std::endl;
-            // simulation(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, constraints);
-            simulation_using_constraint(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, solver, success_rate, cons);
+            simulation(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file);
+            // simulation_using_constraint(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, solver, success_rate, cons);
 
 
             auto gen_input_end_time = std::chrono::high_resolution_clock::now();

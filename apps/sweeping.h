@@ -856,10 +856,7 @@ void simulation_using_constraint(TermIterable & input_terms,
     std::unordered_map<Term, std::string> constraint_input_map;
     match_term_constraint_pattern(constraints, constraint_input_map);
 
-    int total_trials = 0;
-    int success_count = 0;
-
-    //load simulation input
+    //--------------load simulation input-----------------
     std::ofstream dumpfile;
     if (!load_file_path.empty()) {
         std::ifstream infile(load_file_path);
@@ -899,7 +896,7 @@ void simulation_using_constraint(TermIterable & input_terms,
         return;
     }
 
-    //dump simulation input
+    //-----------------dump simulation input------------------
     if (!dump_file_path.empty()) {
         dumpfile.open(dump_file_path, std::ios::app);
         if (!dumpfile.is_open()) {
@@ -909,142 +906,118 @@ void simulation_using_constraint(TermIterable & input_terms,
         dumpfile << "[BEGIN NEW SIMULATION BATCH]\n";
     }
 
-    
-    std::unordered_map<Term, std::string> input_cache;
+
+    std::size_t total_trials   = 0;
+    std::size_t success_count  = 0;
     std::chrono::duration<double> total_sat_time(0);
     std::chrono::duration<double> total_unsat_time(0);
 
+    for(auto constraint : constraints){
+        solver->assert_formula(constraint);
+    }
 
+    auto erase_core = [](smt::TermVec &v, const UnorderedTermSet &core) -> std::size_t {
+        const auto old_sz = v.size();
+        v.erase(std::remove_if(v.begin(), v.end(),
+                               [&](const Term &t){ return core.find(t) != core.end(); }),
+                v.end());
+        return old_sz - v.size();
+    };
+    
     for (int i = 0; i < num_iterations;)
     {
         if (dumpfile.is_open()) dumpfile << "[SIMULATION ITERATION " << i << "]\n";
-        for (const auto & term : input_terms)
+
+        //--------------------Generate or overwrite random input-------------------
+        std::unordered_map<Term, std::string> input_cache; // store input values
+        for (const auto & t : input_terms) // generate random input
         {
-            auto width = term->get_sort()->get_width();
-            mpz_t input_mpz;
-            rand_guard.random_input(input_mpz, width);
-            std::unique_ptr<char, void (*)(void *)> input_str(
-                mpz_get_str(nullptr, 2, input_mpz), free);
-            mpz_clear(input_mpz);
-            std::string value_str = input_str.get();
-        
-            if (value_str.size() < term->get_sort()->get_width()) {
-                size_t pad_len = term->get_sort()->get_width() - value_str.size();
-                value_str = std::string(pad_len, '0') + value_str;
+            std::string val;
+             auto it_fix = constraint_input_map.find(t);
+            if (it_fix != constraint_input_map.end()) {
+                val = it_fix->second;                
+            } else {
+                const auto width = t->get_sort()->get_width();
+                mpz_t mpz; 
+                mpz_init(mpz);
+                rand_guard.random_input(mpz, width);
+                std::unique_ptr<char, void(*)(void*)> s(mpz_get_str(nullptr, 2, mpz), free);
+                mpz_clear(mpz);
+                val = s.get();
+                if (val.size() < width) val.insert(0, width - val.size(), '0');
             }
-
-            input_cache[term] = value_str;
-
-            // auto bv_input = btor_bv_const(value_str.c_str(), term->get_sort()->get_width());
-            // node_data_map[term].get_simulation_data().push_back(btor_bv_const(value_str.c_str(), term->get_sort()->get_width()));
-            // if (dumpfile.is_open()) dumpfile << term->to_string() << " = " << value_str << "\n";
+            input_cache.emplace(t, std::move(val));
         }
 
-        //FIXME
-        solver->push(); // for constraint
-        TermVec con; // create term (a & b & c ...)  at given value
-
-        for(const auto & term : input_terms) {
-            auto it = input_cache.find(term);
-            if (it != input_cache.end()) {
-                std::string value_str = it->second;
-                Term value = solver->make_term(value_str.c_str(), solver->make_sort(BV, term->get_sort()->get_width()), 2);
-                auto term_value = solver->make_term(smt::Equal, term, value);
-                con.push_back(term_value);
-            }
+         // ---------- Construct the current assumption collection ----------
+        smt::TermVec assumptions;
+        assumptions.reserve(input_terms.size());
+        for (const auto &t : input_terms) {
+            const std::string &v = input_cache[t];
+            Term val_term = solver->make_term(v.c_str(), solver->make_sort(BV, t->get_sort()->get_width()), 2);
+            assumptions.push_back(solver->make_term(smt::Equal, t, val_term));
         }
 
-        for(auto constraint : constraints){
-            // auto not_constraint = solver->make_term(smt::Not, constraint);
-            con.push_back(constraint);
-        }
-
-        auto start = std::chrono::high_resolution_clock::now();
-        auto result = solver->check_sat_assuming(con); // a=1 & b=0 & c=1 & ... & not(constraint)
-        //if unsat, find unsat core, erase, generate again
-
+        const auto ts_start = std::chrono::high_resolution_clock::now();
+        Result result = solver->check_sat_assuming(assumptions);
         ++total_trials;
 
-        if(result.is_unsat()) {
-            std::cout << "[Simulation] UNSAT at iteration " << i << "\n";
-            UnorderedTermSet out; // unsat core
-            solver->get_unsat_assumptions(out);
+        // ---------- 1) deal with UNSAT and erase unsat core ----------
+        bool sat_now = result.is_sat();
+        if (!sat_now) {
+            auto unsat_start = std::chrono::high_resolution_clock::now();
+            bool progress = true;
+            std::size_t refine_cnt = 0;
 
-            bool removed_any = false;
-            for (auto o : out) { // remove each term in unsat core
-                TermVec child(o->begin(), o->end());
-                Term input_term = child[0];
-                Term old_value = child[1];
+            while (result.is_unsat() && progress ) {
+                UnorderedTermSet core;
+                solver->get_unsat_assumptions(core);
 
-                if (o->get_op() == smt::Equal && input_term->is_symbolic_const()) {
-                    cout << "[UNSAT] Removing assumption: " << o->to_string() << std::endl;
+                progress = erase_core(assumptions, core) > 0;
+                if (!progress || assumptions.empty()) break;
 
-                    //change this to a new random value 
-                    int width = input_term->get_sort()->get_width();
-                    mpz_t rand_num;
-                    rand_guard.random_input(rand_num, width);
-                    std::unique_ptr<char, void (*)(void *)> rand_str(mpz_get_str(nullptr, 2, rand_num), free);
-                    std::string rand_val_str = rand_str.get();
-                    mpz_clear(rand_num);
-
-                    if (rand_val_str.size() < static_cast<size_t>(width)) {
-                        rand_val_str = std::string(width - rand_val_str.size(), '0') + rand_val_str;
-                    }
-
-                    Term new_val = solver->make_term(rand_val_str.c_str(), solver->make_sort(BV, width), 2);
-                    Term new_eq = solver->make_term(Equal, input_term, new_val);
-
-                    auto it = std::find(input_terms.begin(), input_terms.end(), input_term);
-                    if (it != input_terms.end()) {
-                        input_terms.erase(it);
-                        input_terms.push_back(new_eq);
-                        input_cache[input_term] = rand_val_str;
-                        removed_any = true;
-                        std::cout << "[UNSAT] Removed assumption"<< std::endl;
-                    } else {
-                        std::cerr << "[ERROR] Unsat assumption not found in con: " << o << std::endl;
-                        throw std::runtime_error("Unsat assumption not in assumption list");
-                    }
-                } else {
-                    std::cout << "[UNSAT] Skip non-input assumption: " << o << std::endl;
-                }
+                result = solver->check_sat_assuming(assumptions);
             }
-        } 
-        else if(result.is_sat()) {
+            sat_now = result.is_sat();
+            total_unsat_time += std::chrono::high_resolution_clock::now() - unsat_start;
+        }
+        
+        //deal with SAT
+        if (sat_now) {
+            const auto ts_start_sat = std::chrono::high_resolution_clock::now();
             ++i;
             ++success_count;
-            std::cout << "[SAT] at iteration " << i << "\n";
-            for (const auto & term : input_terms) {
-                auto it = input_cache.find(term);
-                if (it != input_cache.end()) {
-                    auto bv_input = btor_bv_const(it->second.c_str(), term->get_sort()->get_width());
-                    node_data_map[term].get_simulation_data().push_back(btor_bv_const(it->second.c_str(), term->get_sort()->get_width()));
-                    if (dumpfile.is_open()) dumpfile << term->to_string() << " = " << it->second << "\n";
-                }
-            }
-            auto end = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double> elapsed_seconds = end - start;
 
-            total_sat_time += elapsed_seconds;
-            std::cout << "[SAT] Iteration "<< i << " succeeded in " << elapsed_seconds.count() << " seconds.\n";
+            for (const auto &t : input_terms) {
+                const std::string &v = input_cache[t];
+                auto bv = btor_bv_const(v.c_str(), t->get_sort()->get_width());
+                node_data_map[t].get_simulation_data().push_back(std::move(bv));
+
+                if (dumpfile.is_open())
+                    dumpfile << t->to_string() << " = " << v << '\n';
+            }
+
+            auto sat_end = std::chrono::high_resolution_clock::now();
+            total_sat_time += sat_end - ts_start_sat;
+
+            std::cout << "[SAT]  iteration " << i
+                      << "   (" << std::chrono::duration<double>(sat_end - ts_start_sat).count()
+                      << " s)\n";
+        } else {
+            std::cout << "[Simulation] UNSAT — iteration discarded\n";
         }
 
-
-        if (dumpfile.is_open()) dumpfile << "\n";
+        if (dumpfile.is_open()) dumpfile << '\n';
     }
 
     std::cout << "[Summary] Total SAT time: " << total_sat_time.count() << " seconds.\n";
     std::cout << "[Summary] Total UNSAT time: " << total_unsat_time.count() << " seconds.\n";
 
-    if (total_trials > 0)
-        success_rate = static_cast<double>(success_count) / total_trials;
-    else
-        success_rate = 0.0;
+    success_rate = total_trials ? static_cast<double>(success_count) / total_trials : 0.0;
 
     if (dumpfile.is_open()) {
         dumpfile << "[END SIMULATION BATCH]\n";
-        dumpfile.close();
-        std::cout << "[Simulation] Dumped input simulation values to: " << dump_file_path << std::endl;
+        std::cout << "[Simulation] Dump saved → " << dump_file_path << '\n';
     }
 }
 
