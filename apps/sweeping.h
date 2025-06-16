@@ -741,6 +741,93 @@ std::string apply_extract_constraint(const std::string & base_value, int high, i
     return result;
 }
 
+
+void reduce_unsat_core_to_fixedpoint(
+    smt::UnorderedTermSet & core_inout,
+    const smt::SmtSolver & reducer_,
+    Result& r) 
+{
+
+    while(true) {
+        r = reducer_->check_sat_assuming_set(core_inout);
+        assert(r.is_unsat());
+
+        smt::UnorderedTermSet core_out;
+        reducer_->get_unsat_assumptions(core_out);
+        if (core_inout.size() == core_out.size()) {
+            break; // fixed point is reached
+        }
+        assert(core_out.size() < core_inout.size());
+        core_inout.swap(core_out);  // namely, core_inout = core_out,  but no need to copy
+    }
+} // end of reduce_unsat_core_to_fixedpoint
+
+void remove_and_move_to_next(smt::TermList & pred_set, smt::TermList::iterator & pred_pos,
+    const smt::UnorderedTermSet & unsatcore) {
+
+    auto pred_iter = pred_set.begin(); // pred_pos;
+    auto pred_pos_new = pred_set.begin();
+
+    bool reached = false;
+    bool next_pos_found = false;
+
+    while( pred_iter != pred_set.end() ) {
+
+        if (pred_iter == pred_pos) {
+            assert (!reached);
+            reached = true;
+        }
+        
+        if (unsatcore.find(*pred_iter) == unsatcore.end()) {
+            assert (reached);
+            pred_iter = pred_set.erase(pred_iter);
+        } else {
+            if (reached && ! next_pos_found) {
+                pred_pos_new = pred_iter;
+                next_pos_found = true;
+            }
+            ++ pred_iter;
+        }
+    } // end of while
+
+    assert(reached);
+    if (! next_pos_found) {
+        assert (pred_iter == pred_set.end());
+        pred_pos_new = pred_iter;
+    }
+    pred_pos = pred_pos_new;
+} // end of remove_and_move_to_next
+
+smt::Term get_first_unreducible_term (
+    smt::TermList & assumption_list,
+    const smt::SmtSolver & reducer_,
+    Result & r) {
+  
+    r = reducer_->check_sat_assuming_list(assumption_list);
+    assert(r.is_unsat());
+    auto to_remove_pos = assumption_list.begin();
+
+    while(to_remove_pos != assumption_list.end()) {
+        smt::Term term_to_remove = *to_remove_pos;
+        auto pos_after = assumption_list.erase(to_remove_pos);
+        r = reducer_->check_sat_assuming_list(assumption_list);
+        to_remove_pos = assumption_list.insert(pos_after, term_to_remove);
+        
+        if (r.is_sat()) {
+            return term_to_remove;
+        } else { // if unsat, we can remove
+            smt::UnorderedTermSet core_set;
+            reducer_->get_unsat_assumptions(core_set);
+            // below function will update assumption_list and to_remove_pos
+            remove_and_move_to_next(assumption_list, to_remove_pos, core_set);
+        }
+    } // end of while
+} // end of reduce_unsat_core_linear
+
+
+
+
+
 template <typename TermIterable>
 void simulation(const TermIterable & input_terms,
                 int num_iterations,
@@ -916,13 +1003,22 @@ void simulation_using_constraint(TermIterable & input_terms,
         solver->assert_formula(constraint);
     }
 
-    auto erase_core = [](smt::TermVec &v, const UnorderedTermSet &core) -> std::size_t {
+    auto erase_core_termset = [](smt::TermVec &v, const UnorderedTermSet &core) -> std::size_t {
         const auto old_sz = v.size();
         v.erase(std::remove_if(v.begin(), v.end(),
                                [&](const Term &t){ return core.find(t) != core.end(); }),
                 v.end());
         return old_sz - v.size();
     };
+
+    auto erase_core_term = [](smt::TermVec &v, const smt::Term &term) -> std::size_t {
+        const auto old_sz = v.size();
+        v.erase(std::remove_if(v.begin(), v.end(),
+                            [&](const smt::Term &t) { return t == term; }),
+                v.end());
+        return old_sz - v.size();
+    };
+
     
     for (int i = 0; i < num_iterations;)
     {
@@ -972,14 +1068,23 @@ void simulation_using_constraint(TermIterable & input_terms,
             while (result.is_unsat() && progress ) {
                 UnorderedTermSet core;
                 solver->get_unsat_assumptions(core);
+                // FIXME HZ note: maybe reduce unsat core here?
+                
+                reduce_unsat_core_to_fixedpoint(core, solver, result);
+                smt::TermList corelist (core.begin(), core.end()); // convert to a list
+                auto term_to_remove = get_first_unreducible_term(corelist, solver, result);
 
-                progress = erase_core(assumptions, core) > 0;
+                // and then remove `term_to_remove` from assumptions
+                progress = erase_core_term(assumptions, term_to_remove) > 0;
                 if (!progress || assumptions.empty()) break;
 
                 result = solver->check_sat_assuming(assumptions);
             }
             sat_now = result.is_sat();
             total_unsat_time += std::chrono::high_resolution_clock::now() - unsat_start;
+            std::cout << "[UNSAT]  iteration " << i
+                      << "   (" << std::chrono::duration<double>(total_unsat_time).count()
+                      << " s)\n";
         }
         
         //deal with SAT

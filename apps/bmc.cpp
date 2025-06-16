@@ -102,8 +102,8 @@ int main(int argc, char* argv[]) {
             double success_rate = 0.00;
             auto gen_input_start_time = std::chrono::high_resolution_clock::now();
             std::cout << "========Input generation start==========" << std::endl;
-            simulation(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file);
-            // simulation_using_constraint(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, solver, success_rate, cons);
+            // simulation(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file);
+            simulation_using_constraint(combined_terms, num_iterations, node_data_map, dump_input_file, load_input_file, solver, success_rate, cons);
 
 
             auto gen_input_end_time = std::chrono::high_resolution_clock::now();

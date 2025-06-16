@@ -332,6 +332,9 @@ endif()
 add_executable(bmc "apps/bmc.cpp")
 target_link_libraries(bmc wasim-lib)
 
+add_executable(test "apps/test.cpp")
+target_link_libraries(test wasim-lib)
+
 # add_executable(divide "apps/divide.cpp")
 # target_link_libraries(divide wasim-lib)
 
