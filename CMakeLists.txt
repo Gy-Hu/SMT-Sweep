@@ -2,11 +2,53 @@ cmake_minimum_required(VERSION 3.1)
 
 project(wasim)
 
+# Add static linking settings at the beginning
+set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+set(CMAKE_EXE_LINKER_FLAGS "-static")
+set(BUILD_SHARED_LIBS OFF)
+
+# Define a variable to indicate static build
+set(STATIC_BUILD ON)
+
+# Disable LTO which is causing issues
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-lto")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-lto")
+
+# Disable stack traces in glog for static builds
+if(STATIC_BUILD)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DGOOGLE_STRIP_LOG=1 -DNO_FRAME_POINTER -DHAVE_NO_SYMBOLIZE -DHAVE_NO_STACKTRACE")
+  add_definitions(-DGOOGLE_STRIP_LOG=1 -DNO_FRAME_POINTER -DHAVE_NO_SYMBOLIZE -DHAVE_NO_STACKTRACE)
+endif()
+
+# Function to set static linking for executables
+function(set_static_linking target)
+    set_target_properties(${target} PROPERTIES LINK_SEARCH_START_STATIC ON)
+    set_target_properties(${target} PROPERTIES LINK_SEARCH_END_STATIC ON)
+    target_link_options(${target} PRIVATE -static -fno-lto)
+    target_link_libraries(${target} PUBLIC -static-libgcc -static-libstdc++)
+    target_link_libraries(${target} PUBLIC -Wl,--whole-archive /usr/lib/x86_64-linux-gnu/libgflags.a -Wl,--no-whole-archive)
+    target_link_libraries(${target} PUBLIC -Wl,--whole-archive /usr/lib/x86_64-linux-gnu/libgmp.a -Wl,--no-whole-archive)
+
+    # Add LZMA library for static linking
+    find_library(LZMA_LIB lzma)
+    if(LZMA_LIB)
+        target_link_libraries(${target} PUBLIC ${LZMA_LIB})
+    endif()
+
+    # Completely avoid using libunwind
+    target_compile_definitions(${target} PRIVATE HAVE_NO_SYMBOLIZE=1 HAVE_NO_STACKTRACE=1)
+
+    # Fix the _Unwind_Resume conflict by excluding libgcc_eh and libunwind
+    target_link_options(${target} PRIVATE -Wl,--exclude-libs=libgcc_eh.a:libunwind.a)
+
+    # Add additional libraries needed for static linking
+    target_link_libraries(${target} PUBLIC -Wl,--start-group -lpthread -ldl -lrt -lz -Wl,--end-group)
+endfunction()
+
 set(WASIM_MAJOR 0)   # Major component of WASIM version
 set(WASIM_MINOR 1)   # Minor component of WASIM version
 set(WASIM_RELEASE 1) # Release component of WASIM version
-
-add_compile_options(-O3)
 
 
 # handle different versions of CMake
@@ -73,25 +115,7 @@ set(SMT_SWITCH_DIR "${PROJECT_SOURCE_DIR}/deps/smt-switch")
 # rely on cmake modules from smt-switch (required anyway)
 set(CMAKE_MODULE_PATH ${SMT_SWITCH_DIR}/cmake)
 
-find_path(GMP_INCLUDE_DIR NAMES gmp.h
-    PATHS /usr/include /usr/local/include /usr/include/x86_64-linux-gnu)
-
-find_library(GMP_LIBRARY NAMES gmp
-    PATHS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu)
-
-if(GMP_INCLUDE_DIR AND GMP_LIBRARY)
-    set(GMP_FOUND TRUE)
-    set(GMP_INCLUDE_DIRS ${GMP_INCLUDE_DIR})
-    set(GMP_LIBRARIES ${GMP_LIBRARY})
-endif()
-
-include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(GMP
-    REQUIRED_VARS GMP_LIBRARY GMP_INCLUDE_DIR)
-
-mark_as_advanced(GMP_INCLUDE_DIR GMP_LIBRARY)
-
-# find_package(GMP REQUIRED)
+find_package(GMP REQUIRED)
 find_package(PkgConfig REQUIRED)
 list(APPEND CMAKE_PREFIX_PATH "${SMT_SWITCH_DIR}/deps/install")
 pkg_check_modules(BITWUZLA REQUIRED bitwuzla)
@@ -194,20 +218,36 @@ if (WITH_MSAT_IC3IA)
   target_link_libraries(wasim-lib PUBLIC "${PROJECT_SOURCE_DIR}/deps/ic3ia/build/libic3ia.a")
 endif()
 
-find_library(UNWIND_LIB unwind)
-if(UNWIND_LIB)
-    target_link_libraries(wasim-lib PUBLIC ${UNWIND_LIB})
+# Only use libunwind for non-static builds to avoid symbol conflicts
+if(NOT STATIC_BUILD)
+  find_library(UNWIND_LIB unwind)
+  if(UNWIND_LIB)
+    # Add LZMA library which is required by libunwind
+    find_library(LZMA_LIB lzma)
+    if(LZMA_LIB)
+      # Link LZMA first, then unwind to resolve dependencies correctly
+      target_link_libraries(wasim-lib PUBLIC ${LZMA_LIB})
+      target_link_libraries(wasim-lib PUBLIC ${UNWIND_LIB})
+    else()
+      message(WARNING "LZMA library not found, which is required by libunwind for static linking")
+      # Try to link unwind anyway
+      target_link_libraries(wasim-lib PUBLIC ${UNWIND_LIB})
+    endif()
+  endif()
+else()
+  message(STATUS "Skipping libunwind for static build to avoid symbol conflicts")
+  # Add compile definitions to disable stack traces in glog
+  target_compile_definitions(wasim-lib PUBLIC HAVE_NO_SYMBOLIZE=1 HAVE_NO_STACKTRACE=1)
 endif()
 
 find_package(gflags REQUIRED)
-target_link_libraries(wasim-lib PUBLIC gflags)
+set(GFLAGS_USE_TARGET_NAMESPACE ON)
+target_link_libraries(wasim-lib PUBLIC "${PROJECT_SOURCE_DIR}/deps/glog/install/lib/libglog.a")
+target_link_libraries(wasim-lib PUBLIC -Wl,--whole-archive /usr/lib/x86_64-linux-gnu/libgflags.a -Wl,--no-whole-archive)
 
 target_link_libraries(wasim-lib PUBLIC "${SMT_SWITCH_DIR}/local/lib/libsmt-switch.a")
 target_link_libraries(wasim-lib PUBLIC "${PROJECT_SOURCE_DIR}/deps/btor2tools/build/lib/libbtor2parser.a")
 target_link_libraries(wasim-lib PUBLIC "${BITWUZLA_LDFLAGS}")
-# Link glog after gflags to ensure proper dependency resolution
-target_link_libraries(wasim-lib PUBLIC "${PROJECT_SOURCE_DIR}/deps/glog/install/lib/libglog.a")
-target_link_libraries(wasim-lib PUBLIC gflags)
 
 # target_link_libraries(wasim-lib PUBLIC "${GMPXX_LIBRARIES}")
 # target_link_libraries(wasim-lib PUBLIC "${GMP_LIBRARIES}")
@@ -311,8 +351,8 @@ endif()
 
 
 add_executable(test "apps/test.cpp")
-target_link_libraries(test wasim-lib)
-target_link_libraries(test /lib/x86_64-linux-gnu/libgflags.so)
+target_link_libraries(test PUBLIC wasim-lib)
+set_static_linking(test)
 
 # generate dependent header
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/config/testpath.h.in"  "${CMAKE_CURRENT_SOURCE_DIR}/config/testpath.h")
