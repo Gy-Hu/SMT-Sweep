@@ -1,10 +1,20 @@
-#include "./sweeping.h"
+#include "framework/ts.h"
+#include "frontend/btor2_encoder.h"
+#include "framework/symsim.h"
+#include "utils/logger.h"
+#include "sweeper/node_data.hpp"
+#include <regex>
 #include "smt-switch/bitwuzla_factory.h"
+#include "smt-switch/utils.h"
 #include <fstream>
 #include <iostream>
 #include <unordered_map>
 #include <vector>
 #include <string>
+
+using namespace smt;
+using namespace wasim;
+using namespace sweeper;
 
 void read_simulation_inputs(const std::string & load_file_path, 
                            const UnorderedTermSet& free_symbols,
@@ -75,7 +85,7 @@ void read_simulation_inputs(const std::string & load_file_path,
 
 inline TermVec flatten_and_constraints(const TermVec & constraints) {
     TermVec atoms;
-    vector<Term> stack(constraints.begin(), constraints.end());
+    std::vector<Term> stack(constraints.begin(), constraints.end());
 
     while (!stack.empty()) {
         Term cur = stack.back();
@@ -141,7 +151,7 @@ int main(int argc, char* argv[]) {
     std::cout << "[Simulation] constraints: " << constraints.size() << std::endl;
     auto root = sim.interpret_state_expr_on_curr_frame(prop, false);
     UnorderedTermSet free_symbols;
-    smt::get_free_symbols(root, free_symbols);
+    get_free_symbols(root, free_symbols);
     read_simulation_inputs(input_txt_file, free_symbols, iteration_formulas, solver);
     int total = 0;
     int success = 0;
